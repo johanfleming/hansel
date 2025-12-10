@@ -11,7 +11,11 @@
 #   hansel watch "claude"           # Watch only (no auto-type)
 # =============================================================================
 
-set -e
+# Prevent sourcing - this script must be executed, not sourced
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+    echo "Error: Don't source this script. Run it directly: hansel <command>"
+    return 1 2>/dev/null || exit 1
+fi
 
 # -----------------------------------------------------------------------------
 # Configuration
