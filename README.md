@@ -33,35 +33,29 @@ Autonomous Terminal AI Bridge. Watches Claude CLI, detects when Claude asks ques
 
 ## Installation
 
-### Quick Install (Python)
+### Install from PyPI (Recommended)
 
 ```bash
-# Clone and install
+# macOS (Homebrew Python)
+brew install pipx
+pipx install hansel-ai
+
+# Linux / Windows
+pip install hansel-ai
+```
+
+### Install from Source
+
+```bash
 git clone https://github.com/johanfleming/hansel.git
 cd hansel
 python3 install.py
 ```
 
-### Manual Install
-
-```bash
-# Install dependencies
-pip install requests pexpect
-
-# Copy script
-cp hansel.py ~/.local/bin/hansel
-chmod +x ~/.local/bin/hansel
-```
-
 ### Requirements
 
-- Python 3.7+
-- `requests` (for API calls)
-- `pexpect` (for auto mode - PTY handling)
-
-```bash
-pip install requests pexpect
-```
+- Python 3.8+
+- `requests` (installed automatically with pip)
 
 ## Quick Start
 

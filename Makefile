@@ -44,14 +44,15 @@ test:
 clean:
 	rm -rf dist/ build/ *.egg-info/
 
-build: clean
-	python3 -m pip install --upgrade build
-	python3 -m build
+.venv:
+	python3 -m venv .venv
+	.venv/bin/pip install --upgrade pip build twine
+
+build: clean .venv
+	.venv/bin/python -m build
 
 publish-test: build
-	python3 -m pip install --upgrade twine
-	python3 -m twine upload --repository testpypi dist/*
+	.venv/bin/twine upload --repository testpypi dist/*
 
 publish: build
-	python3 -m pip install --upgrade twine
-	python3 -m twine upload dist/*
+	.venv/bin/twine upload dist/*
