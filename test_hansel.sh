@@ -277,6 +277,24 @@ test_config_env_content() {
     assert_contains "$content" "OPENAI_MODEL" "config mentions model"
 }
 
+test_uninstall_cancel() {
+    echo -e "\n${CYAN}Testing: uninstall cancel${NC}"
+
+    local output
+    output=$(echo "n" | "$HANSEL" uninstall 2>&1)
+
+    assert_contains "$output" "Cancelled" "uninstall can be cancelled"
+}
+
+test_help_shows_uninstall() {
+    echo -e "\n${CYAN}Testing: help shows uninstall${NC}"
+
+    local output
+    output=$("$HANSEL" help 2>&1)
+
+    assert_contains "$output" "uninstall" "help shows uninstall command"
+}
+
 # -----------------------------------------------------------------------------
 # Run Tests
 # -----------------------------------------------------------------------------
@@ -303,6 +321,8 @@ main() {
     test_auto_no_api_key
     test_system_prompt_content
     test_config_env_content
+    test_uninstall_cancel
+    test_help_shows_uninstall
 
     echo ""
     echo "════════════════════════════════════════"

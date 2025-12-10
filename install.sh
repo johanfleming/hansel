@@ -49,18 +49,40 @@ chmod +x "${INSTALL_DIR}/hansel"
 
 echo "✅ Hansel installed: ${INSTALL_DIR}/hansel"
 
-# PATH check
+# PATH check and auto-add
 if [[ ":$PATH:" != *":${INSTALL_DIR}:"* ]]; then
     echo ""
     echo "⚠️  ${INSTALL_DIR} is not in PATH."
-    echo ""
-    echo "Add this line to your ~/.bashrc or ~/.zshrc:"
-    echo ""
-    echo "    export PATH=\"\${HOME}/.local/bin:\${PATH}\""
-    echo ""
-    echo "Then restart your terminal or run:"
-    echo ""
-    echo "    source ~/.bashrc  # or source ~/.zshrc"
+
+    # Detect shell config file
+    SHELL_CONFIG=""
+    if [[ -n "$ZSH_VERSION" ]] || [[ "$SHELL" == */zsh ]]; then
+        SHELL_CONFIG="${HOME}/.zshrc"
+    elif [[ -n "$BASH_VERSION" ]] || [[ "$SHELL" == */bash ]]; then
+        SHELL_CONFIG="${HOME}/.bashrc"
+    fi
+
+    if [[ -n "$SHELL_CONFIG" ]]; then
+        # Check if already in config file
+        if ! grep -q '.local/bin' "$SHELL_CONFIG" 2>/dev/null; then
+            echo "   Adding to ${SHELL_CONFIG}..."
+            echo '' >> "$SHELL_CONFIG"
+            echo '# Hansel - added by installer' >> "$SHELL_CONFIG"
+            echo 'export PATH="${HOME}/.local/bin:${PATH}"' >> "$SHELL_CONFIG"
+            echo "✅ PATH added to ${SHELL_CONFIG}"
+        else
+            echo "   PATH already in ${SHELL_CONFIG}"
+        fi
+        echo ""
+        # Update PATH for current session (works when sourced)
+        export PATH="${HOME}/.local/bin:${PATH}"
+        echo "✅ PATH updated for current session"
+    else
+        echo ""
+        echo "Add this line to your shell config:"
+        echo ""
+        echo "    export PATH=\"\${HOME}/.local/bin:\${PATH}\""
+    fi
 else
     echo "✅ PATH already configured"
 fi

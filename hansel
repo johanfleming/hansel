@@ -483,6 +483,47 @@ EOF
 }
 
 # -----------------------------------------------------------------------------
+# Uninstall
+# -----------------------------------------------------------------------------
+uninstall_hansel() {
+    echo -e "🍞 ${RED}Hansel Uninstall${NC}"
+    echo "════════════════════════════════════════"
+
+    echo -n "Remove Hansel and all data? (y/N): "
+    read -r confirm
+
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo "Cancelled."
+        return 0
+    fi
+
+    # Remove binary
+    local bin_path="${HOME}/.local/bin/hansel"
+    if [[ -f "$bin_path" ]]; then
+        rm -f "$bin_path"
+        echo "✅ Removed ${bin_path}"
+    fi
+
+    # Remove data directory
+    if [[ -d "${HANSEL_DIR}" ]]; then
+        echo -n "Remove config and data (~/.hansel)? (y/N): "
+        read -r confirm_data
+        if [[ "$confirm_data" =~ ^[Yy]$ ]]; then
+            rm -rf "${HANSEL_DIR}"
+            echo "✅ Removed ${HANSEL_DIR}"
+        else
+            echo "   Kept ${HANSEL_DIR}"
+        fi
+    fi
+
+    echo ""
+    echo "🗑️  Hansel uninstalled."
+    echo ""
+    echo "Note: PATH entry in ~/.zshrc or ~/.bashrc was not removed."
+    echo "You can remove it manually if desired."
+}
+
+# -----------------------------------------------------------------------------
 # Status
 # -----------------------------------------------------------------------------
 show_status() {
@@ -540,6 +581,7 @@ COMMANDS:
     
     config          Configure settings
     status          Show status
+    uninstall       Remove Hansel
     help            Show this help
 
 EXAMPLES:
@@ -609,6 +651,9 @@ main() {
             ;;
         help|--help|-h)
             show_help
+            ;;
+        uninstall)
+            uninstall_hansel
             ;;
         "")
             show_help

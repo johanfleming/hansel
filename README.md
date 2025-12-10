@@ -36,8 +36,10 @@ Autonomous Terminal AI Bridge. Watches Claude CLI, detects questions, consults C
 ### Quick Install (curl)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/johanfleming/hansel/main/install.sh | bash
+source <(curl -fsSL https://raw.githubusercontent.com/johanfleming/hansel/main/install.sh)
 ```
+
+This installs hansel and updates your PATH immediately.
 
 ### From Source
 
