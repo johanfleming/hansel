@@ -1,0 +1,19 @@
+# Spanish question patterns (Patrones de preguntas en espanol)
+# Lines starting with # are comments
+
+# Question starters
+^Quieres
+^Deseas
+^Puedo
+^Debo
+^Como
+^Cual
+^Donde
+^Cuando
+^Por que
+
+# Question phrases
+te gustaria
+quieres que
+debo hacer
+prefieres

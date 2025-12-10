@@ -1,0 +1,18 @@
+# German question patterns (Deutsche Fragemuster)
+# Lines starting with # are comments
+
+# Question starters
+^Mochtest du
+^Willst du
+^Soll ich
+^Kann ich
+^Was
+^Wie
+^Welche
+^Wo
+^Warum
+
+# Question phrases
+mochten Sie
+soll ich
+bevorzugst du

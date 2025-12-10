@@ -1,0 +1,34 @@
+# English question patterns
+# Lines starting with # are comments
+
+# Question mark at end
+\?\s*$
+
+# Direct question starters
+^Would you
+^Do you
+^Should I
+^Can I
+^Could you
+^What
+^How
+^Which
+^Where
+^Is this
+^Are you
+
+# Question phrases
+want me to
+like me to
+shall I
+let me know
+prefer
+
+# Action words
+proceed
+continue
+confirm
+approve
+
+# Choice pattern
+or\s+\w+\s*[?\.]?\s*$

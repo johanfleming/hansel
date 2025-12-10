@@ -41,6 +41,10 @@ BUFFER_FILE = HANSEL_DIR / "buffer.txt"
 LOG_DIR = HANSEL_DIR / "logs"
 CONFIG_FILE = HANSEL_DIR / "config.env"
 SYSTEM_PROMPT_FILE = HANSEL_DIR / "system_prompt.txt"
+LANG_DIR = HANSEL_DIR / "lang"
+
+# Script directory for bundled lang files
+SCRIPT_DIR = Path(__file__).parent.resolve() if '__file__' in dir() else Path.cwd()
 
 # Colors
 class Colors:
@@ -207,6 +211,53 @@ Provide a direct, actionable response."""
 # Question Detection
 # =============================================================================
 
+# Cache for loaded patterns
+_question_patterns_cache = None
+
+def load_question_patterns() -> list:
+    """Load question patterns from lang files."""
+    global _question_patterns_cache
+
+    if _question_patterns_cache is not None:
+        return _question_patterns_cache
+
+    patterns = []
+
+    # Look for lang files in multiple locations
+    lang_dirs = [
+        SCRIPT_DIR / "lang",  # Bundled with script
+        LANG_DIR,             # User's ~/.hansel/lang
+    ]
+
+    for lang_dir in lang_dirs:
+        if lang_dir.exists() and lang_dir.is_dir():
+            for lang_file in lang_dir.glob("*.txt"):
+                try:
+                    with open(lang_file, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            line = line.strip()
+                            # Skip empty lines and comments
+                            if line and not line.startswith('#'):
+                                patterns.append(line)
+                except Exception:
+                    pass  # Skip files that can't be read
+
+    # Fallback patterns if no files found
+    if not patterns:
+        patterns = [
+            r'\?\s*$',
+            r'^Would you',
+            r'^Do you',
+            r'^Should I',
+            r'want me to',
+            r'like me to',
+            r'proceed',
+        ]
+
+    _question_patterns_cache = patterns
+    return patterns
+
+
 def is_question(line: str) -> bool:
     """Detect if a line is a question from Claude."""
     if not line or not line.strip():
@@ -214,42 +265,39 @@ def is_question(line: str) -> bool:
 
     line = line.strip()
 
-    # Skip lines that are clearly not questions
+    # Minimum length for a real question
+    if len(line) < 15:
+        return False
+
+    # Skip lines that are clearly not questions (UI hints, shortcuts, code)
     skip_patterns = [
-        r'^[\s]*[#/\*]',  # Comments
-        r'^[\s]*import ',  # Import statements
-        r'^[\s]*from ',    # From imports
-        r'^[\s]*def ',     # Function definitions
-        r'^[\s]*class ',   # Class definitions
-        r'^\+',            # Diff additions
-        r'^\-',            # Diff removals
+        r'^[\s]*[#/\*]',      # Comments
+        r'^[\s]*import ',     # Import statements
+        r'^[\s]*from ',       # From imports
+        r'^[\s]*def ',        # Function definitions
+        r'^[\s]*class ',      # Class definitions
+        r'^\+',               # Diff additions
+        r'^\-',               # Diff removals
+        r'^\?',               # Lines starting with ? (help hints)
+        r'for shortcuts',     # UI hint text
+        r'to interrupt',      # UI hint text (esc to interrupt)
+        r'to edit',           # UI hint text (ctrl-g to edit)
+        r'ctrl[-+]',          # Keyboard shortcuts
+        r'esc\s+to',          # Escape key hints
+        r'^>',                # Input prompts
+        r'Spelunking',        # Claude status messages
+        r'Thinking',          # Claude status messages
+        r'Reading',           # Claude status messages
+        r'Writing',           # Claude status messages
+        r'Searching',         # Claude status messages
     ]
 
     for pattern in skip_patterns:
-        if re.match(pattern, line):
+        if re.search(pattern, line, re.IGNORECASE):
             return False
 
-    # Question patterns
-    question_patterns = [
-        r'\?\s*$',           # Ends with ?
-        r'^Would you',       # Would you...
-        r'^Do you',          # Do you...
-        r'^Should I',        # Should I...
-        r'^Can I',           # Can I...
-        r'^Could you',       # Could you...
-        r'^What ',           # What...
-        r'^How ',            # How...
-        r'^Which ',          # Which...
-        r'^Where ',          # Where...
-        r'^Is this',         # Is this...
-        r'^Are you',         # Are you...
-        r'want me to',       # ...want me to...
-        r'like me to',       # ...like me to...
-        r'proceed',          # ...proceed...
-        r'continue',         # ...continue...
-        r'confirm',          # ...confirm...
-        r'approve',          # ...approve...
-    ]
+    # Load patterns from lang files
+    question_patterns = load_question_patterns()
 
     for pattern in question_patterns:
         if re.search(pattern, line, re.IGNORECASE):
@@ -297,13 +345,29 @@ def autonomous_mode(cmd: str, config: Config):
     start_time = time.time()
     listening_started = False
     master_fd = None
+    last_response_lines = set()  # Track our last response lines to avoid loops
+    last_question_time = 0  # Cooldown between questions
+    cooldown_seconds = 15  # Wait at least 15 seconds between questions
+    response_cooldown_until = 0  # Don't detect questions until this time
+
+    # Create session log file
+    session_id = time.strftime('%Y%m%d_%H%M%S')
+    log_file = LOG_DIR / f"session_{session_id}.log"
+
+    def log_to_file(msg: str):
+        """Write to session log."""
+        with open(log_file, 'a', encoding='utf-8') as f:
+            ts = time.strftime('%H:%M:%S')
+            f.write(f"[{ts}] {msg}\n")
+
+    log_to_file(f"Session started: {cmd}")
 
     # Save original terminal settings
     old_tty = termios.tcgetattr(sys.stdin)
 
     def handle_output(data: str):
         """Process output data and check for questions."""
-        nonlocal line_buffer, listening_started, buffer_lines
+        nonlocal line_buffer, listening_started, buffer_lines, last_question_time, response_cooldown_until
 
         line_buffer += data
 
@@ -321,10 +385,11 @@ def autonomous_mode(cmd: str, config: Config):
             if not clean_line.strip():
                 continue
 
-            # Log to buffer
+            # Log to buffer and file
             with open(BUFFER_FILE, 'a') as f:
                 f.write(clean_line + '\n')
             buffer_lines.append(clean_line)
+            log_to_file(f"OUT: {clean_line[:100]}")
 
             # Keep buffer reasonable size
             if len(buffer_lines) > 200:
@@ -335,9 +400,32 @@ def autonomous_mode(cmd: str, config: Config):
             if not listening_started and elapsed >= config.startup_delay:
                 listening_started = True
                 print(f"\n{Colors.GREEN}Now listening for questions...{Colors.NC}", file=sys.stderr)
+                log_to_file("Listening started")
+
+            # Skip if this looks like our own response
+            line_normalized = clean_line.strip().lower()[:50]
+            for resp_line in last_response_lines:
+                if line_normalized and resp_line and (
+                    line_normalized.startswith(resp_line) or
+                    resp_line.startswith(line_normalized)
+                ):
+                    log_to_file(f"SKIP (own response): {clean_line[:50]}")
+                    return  # Skip this entire line
+
+            # Check response cooldown (don't detect anything as question right after we sent response)
+            if time.time() < response_cooldown_until:
+                log_to_file(f"SKIP (response cooldown): {clean_line[:50]}")
+                continue
+
+            # Check cooldown between questions
+            time_since_last = time.time() - last_question_time
+            if time_since_last < cooldown_seconds:
+                continue
 
             # Check for questions (only after startup delay)
             if listening_started and is_question(clean_line):
+                last_question_time = time.time()
+                log_to_file(f"QUESTION: {clean_line}")
                 # Run in background thread to not block
                 threading.Thread(
                     target=respond_to_question,
@@ -347,19 +435,44 @@ def autonomous_mode(cmd: str, config: Config):
 
     def respond_to_question(question: str, context_lines: list, cfg: Config, fd: int):
         """Get AI response and send it."""
+        nonlocal last_response_lines, response_cooldown_until
+
         print(f"\n{Colors.CYAN}Question detected:{Colors.NC} {question}", file=sys.stderr)
         print(f"{Colors.YELLOW}   Consulting AI advisor...{Colors.NC}", file=sys.stderr)
 
         context = '\n'.join(context_lines[-100:])
         response = call_chatgpt(question, context, cfg)
+
+        # Store response lines to avoid detecting them as questions
+        # Normalize and store each line of the response
+        last_response_lines.clear()
+        for line in response.split('\n'):
+            normalized = line.strip().lower()[:50]
+            if normalized:
+                last_response_lines.add(normalized)
+        # Also store the first part of the whole response
+        last_response_lines.add(response.strip().lower()[:50])
+
         print(f"{Colors.GREEN}Response:{Colors.NC} {response}", file=sys.stderr)
+        log_to_file(f"RESPONSE: {response}")
 
         # Wait before responding
         time.sleep(cfg.response_delay)
 
+        # Set cooldown - don't detect questions for 20 seconds after sending response
+        response_cooldown_until = time.time() + 20
+
         # Send response to the PTY
         if fd:
-            os.write(fd, (response + '\n').encode())
+            # Type response character by character with small delay
+            for char in response:
+                os.write(fd, char.encode())
+                time.sleep(0.01)  # 10ms delay between chars
+            # Send Enter key (try multiple approaches)
+            time.sleep(0.1)
+            os.write(fd, b'\r')  # Carriage return
+            time.sleep(0.05)
+            os.write(fd, b'\n')  # Newline
 
     try:
         # Create pseudo-terminal
@@ -652,15 +765,14 @@ def show_status(config: Config):
     print(f"   Startup:     {config.startup_delay}s")
 
     # Check dependencies
-    if pexpect is not None:
-        print(f"   pexpect:     {Colors.GREEN}installed{Colors.NC}")
-    else:
-        print(f"   pexpect:     {Colors.RED}not installed{Colors.NC} (needed for auto mode)")
-
     if requests is not None:
         print(f"   requests:    {Colors.GREEN}installed{Colors.NC}")
     else:
         print(f"   requests:    {Colors.RED}not installed{Colors.NC} (needed for API calls)")
+
+    # Show loaded languages
+    patterns = load_question_patterns()
+    print(f"   Patterns:    {len(patterns)} loaded")
 
 # =============================================================================
 # Help
