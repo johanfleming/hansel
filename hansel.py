@@ -455,9 +455,33 @@ def autonomous_mode(cmd: str, config: Config):
                     daemon=True
                 ).start()
 
+    def is_confirmation_prompt(question: str, context: list) -> bool:
+        """Check if this is a simple yes/no confirmation with menu options."""
+        q_lower = question.lower()
+        # Check if it's a proceed/confirm type question
+        confirm_patterns = ['do you want to proceed', 'want to continue', 'should i proceed',
+                           'do you want me to', 'shall i continue', 'ready to proceed']
+        if any(p in q_lower for p in confirm_patterns):
+            # Check if recent context has numbered options (1. Yes, 2. No, etc.)
+            recent = '\n'.join(context[-10:]).lower()
+            if '1.' in recent and ('yes' in recent or 'no' in recent):
+                return True
+        return False
+
     def respond_to_question(question: str, context_lines: list, cfg: Config, fd: int):
         """Get AI response and send it."""
         nonlocal last_response_lines, response_cooldown_until
+
+        # Check if this is a simple confirmation prompt with menu
+        if is_confirmation_prompt(question, context_lines):
+            print(f"\n{Colors.CYAN}Confirmation prompt detected:{Colors.NC} {question}", file=sys.stderr)
+            print(f"{Colors.GREEN}Auto-confirming with Enter{Colors.NC}", file=sys.stderr)
+            log_to_file(f"CONFIRM: {question}")
+            time.sleep(cfg.response_delay)
+            response_cooldown_until = time.time() + 10
+            if fd:
+                os.write(fd, b'\r')  # Just press Enter to confirm default (Yes)
+            return
 
         print(f"\n{Colors.CYAN}Question detected:{Colors.NC} {question}", file=sys.stderr)
         print(f"{Colors.YELLOW}   Consulting AI advisor...{Colors.NC}", file=sys.stderr)
