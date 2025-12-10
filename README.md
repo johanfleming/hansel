@@ -1,22 +1,22 @@
-# 🍞 Hansel
+# Hansel
 
-Autonomous Terminal AI Bridge. Watches Claude CLI, detects questions, consults ChatGPT (as system architect), and **automatically types the response** back to Claude.
+Autonomous Terminal AI Bridge. Watches Claude CLI, detects when Claude asks questions, consults an external AI advisor, and **automatically types the response** back to Claude.
 
 > Like Hansel and Gretel - leave breadcrumbs behind, never lose your way.
 
 ## Features
 
-- 🤖 **Full Autopilot Mode** - Zero human intervention needed
-- 🏗️ ChatGPT acts as system architect advisor
-- 📝 Captures all terminal output for context
-- ⚙️ Customizable system prompt
-- 🔄 Configurable response delay
+- **Full Autopilot Mode** - Zero human intervention needed
+- Acts as system architect advisor for Claude
+- Captures all terminal output for context
+- Customizable system prompt
+- Configurable response delay
 
 ## How It Works
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  Claude CLI │────▶│   Hansel    │────▶│   ChatGPT   │
+│  Claude CLI │────▶│   Hansel    │────▶│  AI Advisor │
 │  (asks Q)   │     │  (detects)  │     │  (answers)  │
 └─────────────┘     └─────────────┘     └─────────────┘
        ▲                                       │
@@ -26,40 +26,47 @@ Autonomous Terminal AI Bridge. Watches Claude CLI, detects questions, consults C
 ```
 
 1. Hansel spawns Claude CLI in a PTY
-2. Monitors output for question patterns ("Should I..?", "How..?", etc.)
-3. When question detected, sends context to ChatGPT
-4. ChatGPT (as system architect) provides answer
+2. Monitors Claude's output for question patterns ("Should I..?", "How..?", etc.)
+3. When Claude asks a question, sends context to AI advisor
+4. AI advisor (as system architect) provides answer
 5. Answer is **automatically typed** into Claude CLI
 
 ## Installation
 
-### Quick Install (curl)
+### Quick Install (Python)
 
 ```bash
-source <(curl -fsSL https://raw.githubusercontent.com/johanfleming/hansel/main/install.sh)
-```
-
-This installs hansel and updates your PATH immediately.
-
-### From Source
-
-```bash
+# Clone and install
 git clone https://github.com/johanfleming/hansel.git
 cd hansel
-./install.sh
+python3 install.py
 ```
 
-### Manual
+### Manual Install
 
 ```bash
-cp hansel ~/.local/bin/
+# Install dependencies
+pip install requests pexpect
+
+# Copy script
+cp hansel.py ~/.local/bin/hansel
 chmod +x ~/.local/bin/hansel
+```
+
+### Requirements
+
+- Python 3.7+
+- `requests` (for API calls)
+- `pexpect` (for auto mode - PTY handling)
+
+```bash
+pip install requests pexpect
 ```
 
 ## Quick Start
 
 ```bash
-# 1. Configure OpenAI API key
+# 1. Configure API key
 hansel config
 
 # 2. Run Claude with full autopilot
@@ -68,7 +75,7 @@ hansel auto claude
 # That's it! Hansel will:
 # - Watch Claude's output
 # - Detect when Claude asks a question
-# - Consult ChatGPT for the answer
+# - Consult AI advisor for the answer
 # - Automatically type the response
 ```
 
@@ -93,7 +100,7 @@ hansel watch claude
 # Shows suggested response, you copy/paste
 ```
 
-### Ask ChatGPT Directly
+### Ask Advisor Directly
 
 ```bash
 # Uses buffer as context
@@ -106,12 +113,13 @@ hansel ask "How should I structure the database?"
 |---------|-------------|
 | `hansel auto <cmd>` | **Full autopilot** - detects and auto-responds |
 | `hansel watch <cmd>` | Watch only - suggests but doesn't type |
-| `hansel ask <question>` | Ask ChatGPT directly |
+| `hansel ask <question>` | Ask AI advisor directly |
 | `hansel buffer` | Show full buffer |
 | `hansel last [N]` | Show last N lines (default: 50) |
 | `hansel clear` | Clear buffer |
 | `hansel config` | Configure settings |
 | `hansel status` | Show status |
+| `hansel uninstall` | Remove Hansel |
 
 ## Configuration
 
@@ -127,7 +135,7 @@ RESPONSE_DELAY=2  # Seconds to wait before auto-responding
 
 ### System Prompt
 
-Located at `~/.hansel/system_prompt.txt`. This controls how ChatGPT responds:
+Located at `~/.hansel/system_prompt.txt`. This controls how the AI advisor responds:
 
 ```
 You are a senior system architect helping Claude implement a software project.
@@ -158,7 +166,7 @@ CRITICAL RULES:
 
 ```bash
 $ hansel auto claude
-🍞 Hansel Autonomous Mode
+Hansel Autonomous Mode
    Command: claude
    Model: gpt-4o
    Response delay: 2s
@@ -169,9 +177,9 @@ Press Ctrl+C to exit
 Claude: I'll create a REST API for user management.
         Should I use Express.js or Fastify?
 
-🤖 Question detected: Should I use Express.js or Fastify?
-   Consulting ChatGPT...
-📝 Response: Fastify. 2-3x faster than Express, built-in validation,
+Question detected: Should I use Express.js or Fastify?
+   Consulting AI advisor...
+Response: Fastify. 2-3x faster than Express, built-in validation,
    better TypeScript support. Use Express only if you need its larger
    ecosystem of middleware.
 
@@ -182,9 +190,9 @@ Claude: Got it, I'll use Fastify. Creating the project structure now...
 
 ## Tips
 
-### Customize the Architect
+### Customize the Advisor
 
-Edit `~/.hansel/system_prompt.txt` to change ChatGPT's behavior:
+Edit `~/.hansel/system_prompt.txt` to change the advisor's behavior:
 
 ```bash
 # Open in editor
@@ -216,23 +224,6 @@ alias hw='hansel watch'
 # Usage
 ha claude
 hw "npm run dev"
-```
-
-## Requirements
-
-- Bash 4.0+
-- `expect` (for auto mode)
-- `curl` (for API calls)
-- `jq` (for JSON parsing)
-- Linux or macOS
-
-Install expect:
-```bash
-# Ubuntu/Debian
-sudo apt install expect
-
-# macOS
-brew install expect
 ```
 
 ## License
