@@ -69,7 +69,14 @@ pip install requests pexpect
 # 1. Configure API key
 hansel config
 
-# 2. Run Claude with full autopilot
+# 2. IMPORTANT: First, trust the project folder in Claude
+#    Run claude once in your project directory and accept the trust prompt
+cd /path/to/your/project
+claude
+# Select "Yes, continue" when asked "Do you want to work in this folder?"
+# Then exit Claude (Ctrl+C)
+
+# 3. Run Claude with full autopilot
 hansel auto claude
 
 # That's it! Hansel will:
@@ -78,6 +85,8 @@ hansel auto claude
 # - Consult AI advisor for the answer
 # - Automatically type the response
 ```
+
+> **Note:** You must trust the project folder in Claude before using Hansel. Otherwise, Claude will show a permission prompt that Hansel cannot automatically handle.
 
 ## Usage
 
