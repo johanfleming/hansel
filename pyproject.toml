@@ -7,7 +7,7 @@ name = "hansel-ai"
 version = "0.1.0"
 description = "Autonomous Terminal AI Bridge - Watches Claude CLI, detects questions, consults AI advisor, and auto-responds"
 readme = "README.md"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "Gabo", email = "gabo@example.com"}
 ]
