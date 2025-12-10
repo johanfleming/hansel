@@ -4,10 +4,10 @@
 # 🍞 Hansel Installer
 # =============================================================================
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/johanfleming/hansel/main/install.sh | bash
+#   source <(curl -fsSL https://raw.githubusercontent.com/johanfleming/hansel/main/install.sh)
 # =============================================================================
 
-set -e
+# Don't use set -e - it breaks the user's shell when sourced
 
 INSTALL_DIR="${HOME}/.local/bin"
 REPO_URL="https://raw.githubusercontent.com/johanfleming/hansel/main"
