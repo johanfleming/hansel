@@ -19,6 +19,10 @@ import signal
 import subprocess
 import threading
 import argparse
+import pty
+import select
+import tty
+import termios
 from pathlib import Path
 from typing import Optional
 import shutil
@@ -27,11 +31,6 @@ try:
     import requests
 except ImportError:
     requests = None
-
-try:
-    import pexpect
-except ImportError:
-    pexpect = None
 
 # =============================================================================
 # Configuration
@@ -273,11 +272,6 @@ def clean_ansi(text: str) -> str:
 
 def autonomous_mode(cmd: str, config: Config):
     """Run in full autonomous mode with auto-typing responses."""
-    if pexpect is None:
-        print(f"{Colors.RED}Error: pexpect library not installed.{Colors.NC}")
-        print("Run: pip install pexpect")
-        return 1
-
     if not config.openai_api_key:
         print(f"{Colors.RED}Error: OPENAI_API_KEY not set{Colors.NC}")
         print("Run: hansel config")
@@ -299,67 +293,128 @@ def autonomous_mode(cmd: str, config: Config):
         f.write(f"[{timestamp}] Starting: {cmd}\n")
 
     buffer_lines = []
+    line_buffer = ""
     start_time = time.time()
     listening_started = False
+    master_fd = None
+
+    # Save original terminal settings
+    old_tty = termios.tcgetattr(sys.stdin)
+
+    def handle_output(data: str):
+        """Process output data and check for questions."""
+        nonlocal line_buffer, listening_started, buffer_lines
+
+        line_buffer += data
+
+        # Process complete lines
+        while '\n' in line_buffer or '\r' in line_buffer:
+            # Split on newline or carriage return
+            for sep in ['\r\n', '\n', '\r']:
+                if sep in line_buffer:
+                    line, line_buffer = line_buffer.split(sep, 1)
+                    break
+            else:
+                break
+
+            clean_line = clean_ansi(line)
+            if not clean_line.strip():
+                continue
+
+            # Log to buffer
+            with open(BUFFER_FILE, 'a') as f:
+                f.write(clean_line + '\n')
+            buffer_lines.append(clean_line)
+
+            # Keep buffer reasonable size
+            if len(buffer_lines) > 200:
+                buffer_lines = buffer_lines[-100:]
+
+            # Check startup delay
+            elapsed = time.time() - start_time
+            if not listening_started and elapsed >= config.startup_delay:
+                listening_started = True
+                print(f"\n{Colors.GREEN}Now listening for questions...{Colors.NC}", file=sys.stderr)
+
+            # Check for questions (only after startup delay)
+            if listening_started and is_question(clean_line):
+                # Run in background thread to not block
+                threading.Thread(
+                    target=respond_to_question,
+                    args=(clean_line, list(buffer_lines), config, master_fd),
+                    daemon=True
+                ).start()
+
+    def respond_to_question(question: str, context_lines: list, cfg: Config, fd: int):
+        """Get AI response and send it."""
+        print(f"\n{Colors.CYAN}Question detected:{Colors.NC} {question}", file=sys.stderr)
+        print(f"{Colors.YELLOW}   Consulting AI advisor...{Colors.NC}", file=sys.stderr)
+
+        context = '\n'.join(context_lines[-100:])
+        response = call_chatgpt(question, context, cfg)
+        print(f"{Colors.GREEN}Response:{Colors.NC} {response}", file=sys.stderr)
+
+        # Wait before responding
+        time.sleep(cfg.response_delay)
+
+        # Send response to the PTY
+        if fd:
+            os.write(fd, (response + '\n').encode())
 
     try:
-        # Spawn the process
-        child = pexpect.spawn(cmd, encoding='utf-8', timeout=None)
-        child.logfile_read = sys.stdout
+        # Create pseudo-terminal
+        pid, master_fd = pty.fork()
 
-        while True:
+        if pid == 0:
+            # Child process - execute command
+            os.execlp('/bin/sh', '/bin/sh', '-c', cmd)
+        else:
+            # Parent process
+            # Set terminal to raw mode so keystrokes go through
+            tty.setraw(sys.stdin.fileno())
+
             try:
-                # Read output
-                index = child.expect(['\r\n', '\n', pexpect.EOF, pexpect.TIMEOUT], timeout=0.5)
+                while True:
+                    # Wait for input from either stdin or the PTY
+                    rlist, _, _ = select.select([sys.stdin, master_fd], [], [], 0.1)
 
-                if index in [0, 1]:  # Got a line
-                    line = child.before
-                    clean_line = clean_ansi(line)
+                    for fd in rlist:
+                        if fd == sys.stdin:
+                            # User typed something - forward to PTY
+                            data = os.read(sys.stdin.fileno(), 1024)
+                            if data:
+                                os.write(master_fd, data)
+                        elif fd == master_fd:
+                            # Output from PTY - display and analyze
+                            try:
+                                data = os.read(master_fd, 1024)
+                                if data:
+                                    # Write to stdout
+                                    os.write(sys.stdout.fileno(), data)
+                                    # Process for questions
+                                    handle_output(data.decode('utf-8', errors='replace'))
+                                else:
+                                    # EOF
+                                    raise EOFError()
+                            except OSError:
+                                raise EOFError()
 
-                    # Log to buffer
-                    with open(BUFFER_FILE, 'a') as f:
-                        f.write(clean_line + '\n')
-                    buffer_lines.append(clean_line)
+                    # Check if child process has exited
+                    result = os.waitpid(pid, os.WNOHANG)
+                    if result[0] != 0:
+                        break
 
-                    # Keep buffer reasonable size
-                    if len(buffer_lines) > 200:
-                        buffer_lines = buffer_lines[-100:]
-
-                    # Wait for startup delay before listening for questions
-                    elapsed = time.time() - start_time
-                    if not listening_started and elapsed >= config.startup_delay:
-                        listening_started = True
-                        print(f"\n{Colors.GREEN}Now listening for questions...{Colors.NC}", file=sys.stderr)
-
-                    # Check for questions (only after startup delay)
-                    if listening_started and is_question(clean_line):
-                        print(f"\n{Colors.CYAN}Question detected:{Colors.NC} {clean_line}", file=sys.stderr)
-                        print(f"{Colors.YELLOW}   Consulting ChatGPT...{Colors.NC}", file=sys.stderr)
-
-                        # Get context
-                        context = '\n'.join(buffer_lines[-100:])
-
-                        # Get response
-                        response = call_chatgpt(clean_line, context, config)
-                        print(f"{Colors.GREEN}Response:{Colors.NC} {response}", file=sys.stderr)
-
-                        # Wait before responding
-                        time.sleep(config.response_delay)
-
-                        # Type response
-                        child.sendline(response)
-
-                elif index == 2:  # EOF
-                    break
-
-            except pexpect.TIMEOUT:
-                continue
+            except EOFError:
+                pass
 
     except KeyboardInterrupt:
         print(f"\n{Colors.YELLOW}Interrupted by user{Colors.NC}")
     except Exception as e:
         print(f"{Colors.RED}Error: {e}{Colors.NC}")
         return 1
+    finally:
+        # Restore terminal settings
+        termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_tty)
 
     return 0
 
