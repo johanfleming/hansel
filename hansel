@@ -1,0 +1,660 @@
+#!/bin/bash
+
+# =============================================================================
+# 🍞 Hansel - Autonomous Terminal AI Bridge
+# =============================================================================
+# Watches Claude CLI, detects questions, consults ChatGPT, and automatically
+# types the response back to Claude. Fully autonomous operation.
+#
+# Usage:
+#   hansel auto "claude"            # Full autonomous mode
+#   hansel watch "claude"           # Watch only (no auto-type)
+# =============================================================================
+
+set -e
+
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+HANSEL_DIR="${HOME}/.hansel"
+BUFFER_FILE="${HANSEL_DIR}/buffer.txt"
+LOG_DIR="${HANSEL_DIR}/logs"
+CONFIG_FILE="${HANSEL_DIR}/config.env"
+SYSTEM_PROMPT_FILE="${HANSEL_DIR}/system_prompt.txt"
+EXPECT_SCRIPT="${HANSEL_DIR}/auto_respond.exp"
+
+# ChatGPT Configuration
+OPENAI_API_KEY="${OPENAI_API_KEY:-}"
+OPENAI_MODEL="${OPENAI_MODEL:-gpt-4o}"
+
+# Auto-respond settings
+AUTO_RESPOND="${AUTO_RESPOND:-false}"
+RESPONSE_DELAY="${RESPONSE_DELAY:-2}"  # Seconds to wait before responding
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+MAGENTA='\033[0;35m'
+NC='\033[0m'
+
+# -----------------------------------------------------------------------------
+# Setup
+# -----------------------------------------------------------------------------
+ensure_dirs() {
+    mkdir -p "${HANSEL_DIR}"
+    mkdir -p "${LOG_DIR}"
+    
+    # Create default config
+    if [[ ! -f "${CONFIG_FILE}" ]]; then
+        cat > "${CONFIG_FILE}" <<'EOF'
+# Hansel Configuration
+# OPENAI_API_KEY=sk-your-key-here
+# OPENAI_MODEL=gpt-4o
+# RESPONSE_DELAY=2
+EOF
+    fi
+    
+    # Create default system prompt
+    if [[ ! -f "${SYSTEM_PROMPT_FILE}" ]]; then
+        cat > "${SYSTEM_PROMPT_FILE}" <<'EOF'
+You are a senior system architect helping Claude (another AI) implement a software project.
+
+CRITICAL RULES:
+1. Give DIRECT, ACTIONABLE answers - no fluff
+2. When asked yes/no questions, start with "yes" or "no"
+3. When asked to choose between options, state your choice first
+4. Keep responses concise (2-4 sentences max for simple questions)
+5. For technical questions, include brief code snippets if helpful
+
+Your response will be automatically typed into Claude's terminal, so:
+- Don't use markdown formatting (no ```, no ##, no **)
+- Write plain text only
+- Be concise - long responses slow things down
+
+Examples:
+Q: "Should I use PostgreSQL or MongoDB?"
+A: PostgreSQL. Better for relational data, ACID compliance, and complex queries. MongoDB only if you need flexible schemas for unstructured data.
+
+Q: "Do you want me to proceed with this implementation?"
+A: Yes, proceed.
+
+Q: "How should I structure the API endpoints?"
+A: Use RESTful conventions: GET /users for list, POST /users for create, GET /users/:id for single, PUT /users/:id for update, DELETE /users/:id for delete.
+EOF
+    fi
+    
+    # Load config
+    [[ -f "${CONFIG_FILE}" ]] && source "${CONFIG_FILE}"
+}
+
+# -----------------------------------------------------------------------------
+# ChatGPT Integration
+# -----------------------------------------------------------------------------
+call_chatgpt() {
+    local question="$1"
+    local context="$2"
+    
+    if [[ -z "${OPENAI_API_KEY}" ]]; then
+        echo "Error: OPENAI_API_KEY not set" >&2
+        return 1
+    fi
+    
+    local system_prompt=""
+    if [[ -f "${SYSTEM_PROMPT_FILE}" ]]; then
+        system_prompt=$(cat "${SYSTEM_PROMPT_FILE}")
+    fi
+    
+    local user_message="CONTEXT (recent terminal output):
+${context}
+
+CLAUDE'S QUESTION:
+${question}
+
+Provide a direct, actionable response."
+
+    # Escape for JSON
+    system_prompt=$(echo "$system_prompt" | jq -Rs .)
+    user_message=$(echo "$user_message" | jq -Rs .)
+    
+    local payload=$(cat <<EOF
+{
+    "model": "${OPENAI_MODEL}",
+    "messages": [
+        {"role": "system", "content": ${system_prompt}},
+        {"role": "user", "content": ${user_message}}
+    ],
+    "temperature": 0.7,
+    "max_tokens": 500
+}
+EOF
+)
+
+    local response=$(curl -s https://api.openai.com/v1/chat/completions \
+        -H "Content-Type: application/json" \
+        -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+        -d "$payload" 2>/dev/null)
+    
+    echo "$response" | jq -r '.choices[0].message.content // "Error: No response"' 2>/dev/null || echo "Error: Failed to parse response"
+}
+
+# -----------------------------------------------------------------------------
+# Question Detection
+# -----------------------------------------------------------------------------
+is_question() {
+    local line="$1"
+    
+    # Skip empty lines
+    [[ -z "$line" ]] && return 1
+    
+    # Skip lines that are clearly not questions (file paths, code, etc.)
+    [[ "$line" =~ ^[[:space:]]*[\#/\*] ]] && return 1
+    [[ "$line" =~ ^[[:space:]]*import ]] && return 1
+    [[ "$line" =~ ^[[:space:]]*from ]] && return 1
+    [[ "$line" =~ ^[[:space:]]*def ]] && return 1
+    [[ "$line" =~ ^[[:space:]]*class ]] && return 1
+    [[ "$line" =~ ^\+ ]] && return 1
+    [[ "$line" =~ ^\- ]] && return 1
+    
+    # Detect question patterns
+    if [[ "$line" =~ \?[[:space:]]*$ ]] || \
+       [[ "$line" =~ ^"Would you" ]] || \
+       [[ "$line" =~ ^"Do you" ]] || \
+       [[ "$line" =~ ^"Should I" ]] || \
+       [[ "$line" =~ ^"Can I" ]] || \
+       [[ "$line" =~ ^"Could you" ]] || \
+       [[ "$line" =~ ^"What " ]] || \
+       [[ "$line" =~ ^"How " ]] || \
+       [[ "$line" =~ ^"Which " ]] || \
+       [[ "$line" =~ ^"Where " ]] || \
+       [[ "$line" =~ ^"Is this" ]] || \
+       [[ "$line" =~ ^"Are you" ]] || \
+       [[ "$line" =~ "want me to" ]] || \
+       [[ "$line" =~ "like me to" ]] || \
+       [[ "$line" =~ "proceed" ]] || \
+       [[ "$line" =~ "continue" ]] || \
+       [[ "$line" =~ "confirm" ]] || \
+       [[ "$line" =~ "approve" ]]; then
+        return 0
+    fi
+    return 1
+}
+
+# -----------------------------------------------------------------------------
+# Create Expect Script for Auto-typing
+# -----------------------------------------------------------------------------
+create_expect_script() {
+    cat > "${EXPECT_SCRIPT}" <<'EXPECT_EOF'
+#!/usr/bin/expect -f
+
+# Get arguments
+set command [lindex $argv 0]
+set hansel_dir $env(HOME)/.hansel
+set buffer_file "$hansel_dir/buffer.txt"
+set response_file "$hansel_dir/pending_response.txt"
+set question_file "$hansel_dir/pending_question.txt"
+
+# Spawn the command
+spawn -noecho {*}$command
+
+# Set timeout
+set timeout -1
+
+# Track state
+set line_buffer ""
+set in_question 0
+
+# Function to check if line is a question
+proc is_question {line} {
+    if {[string match "*\?" $line]} { return 1 }
+    if {[string match "Would you*" $line]} { return 1 }
+    if {[string match "Do you*" $line]} { return 1 }
+    if {[string match "Should I*" $line]} { return 1 }
+    if {[string match "Can I*" $line]} { return 1 }
+    if {[string match "What *" $line]} { return 1 }
+    if {[string match "How *" $line]} { return 1 }
+    if {[string match "Which *" $line]} { return 1 }
+    if {[string match "*want me to*" $line]} { return 1 }
+    if {[string match "*like me to*" $line]} { return 1 }
+    if {[string match "*proceed*" $line]} { return 1 }
+    if {[string match "*continue*" $line]} { return 1 }
+    return 0
+}
+
+# Main interaction loop
+expect {
+    -re {([^\r\n]+)[\r\n]} {
+        set line $expect_out(1,string)
+        
+        # Log to buffer
+        set f [open $buffer_file a]
+        puts $f $line
+        close $f
+        
+        # Check if it's a question
+        if {[is_question $line]} {
+            # Write question to file for hansel to process
+            set f [open $question_file w]
+            puts $f $line
+            close $f
+            
+            # Wait for response file to appear
+            set wait_count 0
+            while {$wait_count < 30} {
+                if {[file exists $response_file]} {
+                    after 500
+                    set f [open $response_file r]
+                    set response [read $f]
+                    close $f
+                    file delete $response_file
+                    file delete $question_file
+                    
+                    # Type the response
+                    send -- "$response\r"
+                    break
+                }
+                after 1000
+                incr wait_count
+            }
+        }
+        exp_continue
+    }
+    eof {
+        # Command finished
+    }
+}
+EXPECT_EOF
+    chmod +x "${EXPECT_SCRIPT}"
+}
+
+# -----------------------------------------------------------------------------
+# Autonomous Mode - Full autopilot
+# -----------------------------------------------------------------------------
+autonomous_mode() {
+    local cmd="$*"
+    
+    if [[ -z "$cmd" ]]; then
+        echo "Usage: hansel auto <command>"
+        echo "Example: hansel auto claude"
+        return 1
+    fi
+    
+    ensure_dirs
+    
+    if [[ -z "${OPENAI_API_KEY}" ]]; then
+        echo -e "${RED}Error: OPENAI_API_KEY not set${NC}"
+        echo "Run: hansel config"
+        return 1
+    fi
+    
+    echo -e "🍞 ${GREEN}Hansel Autonomous Mode${NC}"
+    echo -e "   Command: ${BLUE}$cmd${NC}"
+    echo -e "   Model: ${CYAN}${OPENAI_MODEL}${NC}"
+    echo -e "   Response delay: ${RESPONSE_DELAY}s"
+    echo ""
+    echo -e "${YELLOW}Press Ctrl+C to exit${NC}"
+    echo "════════════════════════════════════════"
+    echo ""
+    
+    # Clear old files
+    rm -f "${HANSEL_DIR}/pending_question.txt"
+    rm -f "${HANSEL_DIR}/pending_response.txt"
+    
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "[$timestamp] Starting: $cmd" >> "${BUFFER_FILE}"
+    
+    # Start background watcher for questions
+    (
+        while true; do
+            if [[ -f "${HANSEL_DIR}/pending_question.txt" ]]; then
+                local question=$(cat "${HANSEL_DIR}/pending_question.txt")
+                
+                if [[ -n "$question" ]]; then
+                    echo -e "\n${CYAN}🤖 Question detected:${NC} $question" >&2
+                    echo -e "${YELLOW}   Consulting ChatGPT...${NC}" >&2
+                    
+                    # Get context
+                    local context=""
+                    if [[ -f "${BUFFER_FILE}" ]]; then
+                        context=$(tail -n 100 "${BUFFER_FILE}")
+                    fi
+                    
+                    # Get response from ChatGPT
+                    local response=$(call_chatgpt "$question" "$context")
+                    
+                    echo -e "${GREEN}📝 Response:${NC} $response" >&2
+                    
+                    # Wait before responding
+                    sleep "${RESPONSE_DELAY}"
+                    
+                    # Write response for expect to pick up
+                    echo "$response" > "${HANSEL_DIR}/pending_response.txt"
+                fi
+            fi
+            sleep 0.5
+        done
+    ) &
+    local watcher_pid=$!
+    
+    # Cleanup on exit
+    trap "kill $watcher_pid 2>/dev/null; exit" EXIT INT TERM
+    
+    # Create and run expect script
+    create_expect_script
+    expect "${EXPECT_SCRIPT}" "$cmd"
+}
+
+# -----------------------------------------------------------------------------
+# Simple Watch Mode (bash-based, for when expect isn't needed)
+# -----------------------------------------------------------------------------
+watch_command() {
+    local cmd="$*"
+    
+    if [[ -z "$cmd" ]]; then
+        echo "Usage: hansel watch <command>"
+        return 1
+    fi
+    
+    ensure_dirs
+    
+    echo -e "🔍 ${BLUE}Watching:${NC} $cmd"
+    echo ""
+    
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo "════════════════════════════════════════" >> "${BUFFER_FILE}"
+    echo "[$timestamp] $ $cmd" >> "${BUFFER_FILE}"
+    echo "════════════════════════════════════════" >> "${BUFFER_FILE}"
+    
+    # Run with script for PTY
+    script -q -c "$cmd" /dev/null 2>&1 | while IFS= read -r line; do
+        # Clean ANSI codes
+        clean_line=$(echo "$line" | sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r')
+        
+        echo "$line"
+        echo "$clean_line" >> "${BUFFER_FILE}"
+        
+        # Detect questions and notify
+        if is_question "$clean_line"; then
+            echo -e "\n${CYAN}❓ Question detected:${NC} $clean_line" >&2
+            
+            if [[ -n "${OPENAI_API_KEY}" ]]; then
+                local context=$(tail -n 50 "${BUFFER_FILE}")
+                local response=$(call_chatgpt "$clean_line" "$context")
+                echo -e "${GREEN}💡 Suggested:${NC} $response" >&2
+                echo -e "${YELLOW}(Copy and paste, or type your own)${NC}" >&2
+            fi
+        fi
+    done
+}
+
+# -----------------------------------------------------------------------------
+# Interactive Auto Mode - Shows responses, waits for confirmation
+# -----------------------------------------------------------------------------
+interactive_auto() {
+    local cmd="$*"
+    
+    if [[ -z "$cmd" ]]; then
+        echo "Usage: hansel interactive <command>"
+        return 1
+    fi
+    
+    ensure_dirs
+    
+    if [[ -z "${OPENAI_API_KEY}" ]]; then
+        echo -e "${RED}Error: OPENAI_API_KEY not set${NC}"
+        return 1
+    fi
+    
+    echo -e "🍞 ${GREEN}Hansel Interactive Auto Mode${NC}"
+    echo -e "   When Claude asks a question:"
+    echo -e "   - ChatGPT suggests an answer"
+    echo -e "   - Press ${CYAN}Enter${NC} to send, or type your own"
+    echo ""
+    
+    # Use coprocess for bidirectional communication
+    coproc CLAUDE { script -q -c "$cmd" /dev/null 2>&1; }
+    
+    local claude_out="${CLAUDE[0]}"
+    local claude_in="${CLAUDE[1]}"
+    
+    while IFS= read -r line <&${claude_out}; do
+        clean_line=$(echo "$line" | sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r')
+        
+        echo "$line"
+        echo "$clean_line" >> "${BUFFER_FILE}"
+        
+        if is_question "$clean_line"; then
+            echo ""
+            echo -e "${CYAN}🤖 Consulting ChatGPT...${NC}"
+            
+            local context=$(tail -n 50 "${BUFFER_FILE}")
+            local response=$(call_chatgpt "$clean_line" "$context")
+            
+            echo -e "${GREEN}Suggested response:${NC}"
+            echo "$response"
+            echo ""
+            echo -ne "${YELLOW}Press Enter to send, or type your own: ${NC}"
+            
+            read -r user_input
+            
+            if [[ -z "$user_input" ]]; then
+                echo "$response" >&${claude_in}
+            else
+                echo "$user_input" >&${claude_in}
+            fi
+        fi
+    done
+}
+
+# -----------------------------------------------------------------------------
+# Buffer Operations
+# -----------------------------------------------------------------------------
+show_buffer() {
+    [[ -f "${BUFFER_FILE}" ]] && cat "${BUFFER_FILE}" || echo "Buffer is empty"
+}
+
+last_lines() {
+    local n=${1:-50}
+    [[ -f "${BUFFER_FILE}" ]] && tail -n "$n" "${BUFFER_FILE}" || echo "Buffer is empty"
+}
+
+clear_buffer() {
+    rm -f "${BUFFER_FILE}"
+    echo -e "🧹 Buffer ${GREEN}cleared${NC}"
+}
+
+# -----------------------------------------------------------------------------
+# Ask ChatGPT directly
+# -----------------------------------------------------------------------------
+ask_gpt() {
+    local question="$*"
+    [[ -z "$question" ]] && { echo "Usage: hansel ask <question>"; return 1; }
+    
+    ensure_dirs
+    
+    echo -e "${CYAN}🤖 Asking ChatGPT...${NC}" >&2
+    
+    local context=""
+    [[ -f "${BUFFER_FILE}" ]] && context=$(tail -n 100 "${BUFFER_FILE}")
+    
+    call_chatgpt "$question" "$context"
+}
+
+# -----------------------------------------------------------------------------
+# Configuration
+# -----------------------------------------------------------------------------
+configure() {
+    ensure_dirs
+    
+    echo -e "🍞 ${GREEN}Hansel Configuration${NC}"
+    echo "════════════════════════════════════════"
+    
+    echo -n "OpenAI API Key [${OPENAI_API_KEY:+${OPENAI_API_KEY:0:10}...}]: "
+    read -r new_key
+    [[ -n "$new_key" ]] && OPENAI_API_KEY="$new_key"
+    
+    echo -n "OpenAI Model [${OPENAI_MODEL}]: "
+    read -r new_model
+    [[ -n "$new_model" ]] && OPENAI_MODEL="$new_model"
+    
+    echo -n "Response delay seconds [${RESPONSE_DELAY:-2}]: "
+    read -r new_delay
+    [[ -n "$new_delay" ]] && RESPONSE_DELAY="$new_delay"
+    
+    cat > "${CONFIG_FILE}" <<EOF
+# Hansel Configuration
+OPENAI_API_KEY=${OPENAI_API_KEY}
+OPENAI_MODEL=${OPENAI_MODEL}
+RESPONSE_DELAY=${RESPONSE_DELAY:-2}
+EOF
+    
+    echo ""
+    echo -e "✅ Configuration saved"
+    
+    echo -n "Edit system prompt? (y/N): "
+    read -r edit_prompt
+    [[ "$edit_prompt" =~ ^[Yy]$ ]] && ${EDITOR:-nano} "${SYSTEM_PROMPT_FILE}"
+}
+
+# -----------------------------------------------------------------------------
+# Status
+# -----------------------------------------------------------------------------
+show_status() {
+    ensure_dirs
+    
+    echo "🍞 Hansel Status"
+    echo "════════════════════════════════════════"
+    echo "   Directory:   ${HANSEL_DIR}"
+    
+    if [[ -f "${BUFFER_FILE}" ]]; then
+        local lines=$(wc -l < "${BUFFER_FILE}")
+        local size=$(du -h "${BUFFER_FILE}" | cut -f1)
+        echo "   Buffer:      ${lines} lines (${size})"
+    else
+        echo "   Buffer:      empty"
+    fi
+    
+    echo ""
+    echo "   OpenAI Key:  ${OPENAI_API_KEY:+${OPENAI_API_KEY:0:10}...}"
+    echo "   Model:       ${OPENAI_MODEL:-not set}"
+    echo "   Delay:       ${RESPONSE_DELAY:-2}s"
+    
+    if command -v expect &> /dev/null; then
+        echo -e "   Expect:      ${GREEN}✅ installed${NC}"
+    else
+        echo -e "   Expect:      ${RED}❌ not installed${NC} (needed for auto mode)"
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# Help
+# -----------------------------------------------------------------------------
+show_help() {
+    cat <<'EOF'
+🍞 Hansel - Autonomous Terminal AI Bridge
+
+Watches Claude CLI, detects questions, consults ChatGPT, and automatically
+responds. Full autopilot mode available.
+
+USAGE:
+    hansel <COMMAND> [ARGUMENTS]
+
+COMMANDS:
+    auto <cmd>      FULL AUTONOMOUS MODE - auto-detects and responds
+                    Example: hansel auto claude
+                    
+    watch <cmd>     Watch mode - detects questions, suggests responses
+                    Example: hansel watch "npm run dev"
+    
+    ask <question>  Ask ChatGPT directly (uses buffer as context)
+    
+    buffer          Show full buffer
+    last [N]        Show last N lines (default: 50)
+    clear           Clear buffer
+    
+    config          Configure settings
+    status          Show status
+    help            Show this help
+
+EXAMPLES:
+    # Full autopilot (recommended)
+    hansel auto claude
+    
+    # Watch only, manual responses
+    hansel watch claude
+    
+    # Ask ChatGPT with context
+    hansel ask "How should I implement this?"
+
+CONFIGURATION:
+    Config: ~/.hansel/config.env
+    System prompt: ~/.hansel/system_prompt.txt
+    
+    Variables:
+      OPENAI_API_KEY    Your OpenAI API key
+      OPENAI_MODEL      Model to use (default: gpt-4o)
+      RESPONSE_DELAY    Seconds before auto-responding (default: 2)
+
+HOW IT WORKS:
+    1. Hansel spawns Claude CLI in a PTY
+    2. Monitors output for question patterns
+    3. When question detected, sends context to ChatGPT
+    4. ChatGPT (as system architect) provides answer
+    5. Answer is automatically typed into Claude CLI
+
+EOF
+}
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+main() {
+    case "${1:-}" in
+        auto|autopilot|autonomous)
+            shift
+            autonomous_mode "$@"
+            ;;
+        watch)
+            shift
+            watch_command "$@"
+            ;;
+        interactive|int)
+            shift
+            interactive_auto "$@"
+            ;;
+        ask)
+            shift
+            ask_gpt "$@"
+            ;;
+        buffer)
+            show_buffer
+            ;;
+        last)
+            last_lines "${2:-50}"
+            ;;
+        clear)
+            clear_buffer
+            ;;
+        config|configure)
+            configure
+            ;;
+        status)
+            show_status
+            ;;
+        help|--help|-h)
+            show_help
+            ;;
+        "")
+            show_help
+            ;;
+        *)
+            echo -e "${RED}Unknown command:${NC} $1"
+            show_help
+            exit 1
+            ;;
+    esac
+}
+
+main "$@"
