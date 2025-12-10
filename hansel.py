@@ -83,6 +83,7 @@ DEFAULT_CONFIG = """# Hansel Configuration
 # OPENAI_API_KEY=sk-your-key-here
 # OPENAI_MODEL=gpt-4o
 # RESPONSE_DELAY=2
+# STARTUP_DELAY=5
 """
 
 # =============================================================================
@@ -94,6 +95,7 @@ class Config:
         self.openai_api_key = os.environ.get("OPENAI_API_KEY", "")
         self.openai_model = os.environ.get("OPENAI_MODEL", "gpt-4o")
         self.response_delay = int(os.environ.get("RESPONSE_DELAY", "2"))
+        self.startup_delay = int(os.environ.get("STARTUP_DELAY", "5"))
         self.load_config()
 
     def load_config(self):
@@ -115,6 +117,11 @@ class Config:
                                 self.response_delay = int(value)
                             except ValueError:
                                 pass
+                        elif key == "STARTUP_DELAY" and value:
+                            try:
+                                self.startup_delay = int(value)
+                            except ValueError:
+                                pass
 
     def save_config(self):
         """Save configuration to config file."""
@@ -122,6 +129,7 @@ class Config:
 OPENAI_API_KEY={self.openai_api_key}
 OPENAI_MODEL={self.openai_model}
 RESPONSE_DELAY={self.response_delay}
+STARTUP_DELAY={self.startup_delay}
 """
         with open(CONFIG_FILE, 'w') as f:
             f.write(content)
@@ -279,6 +287,7 @@ def autonomous_mode(cmd: str, config: Config):
     print(f"   Command: {Colors.BLUE}{cmd}{Colors.NC}")
     print(f"   Model: {Colors.CYAN}{config.openai_model}{Colors.NC}")
     print(f"   Response delay: {config.response_delay}s")
+    print(f"   Startup delay: {config.startup_delay}s")
     print()
     print(f"{Colors.YELLOW}Press Ctrl+C to exit{Colors.NC}")
     print("=" * 40)
@@ -290,6 +299,8 @@ def autonomous_mode(cmd: str, config: Config):
         f.write(f"[{timestamp}] Starting: {cmd}\n")
 
     buffer_lines = []
+    start_time = time.time()
+    listening_started = False
 
     try:
         # Spawn the process
@@ -314,8 +325,14 @@ def autonomous_mode(cmd: str, config: Config):
                     if len(buffer_lines) > 200:
                         buffer_lines = buffer_lines[-100:]
 
-                    # Check for questions
-                    if is_question(clean_line):
+                    # Wait for startup delay before listening for questions
+                    elapsed = time.time() - start_time
+                    if not listening_started and elapsed >= config.startup_delay:
+                        listening_started = True
+                        print(f"\n{Colors.GREEN}Now listening for questions...{Colors.NC}", file=sys.stderr)
+
+                    # Check for questions (only after startup delay)
+                    if listening_started and is_question(clean_line):
                         print(f"\n{Colors.CYAN}Question detected:{Colors.NC} {clean_line}", file=sys.stderr)
                         print(f"{Colors.YELLOW}   Consulting ChatGPT...{Colors.NC}", file=sys.stderr)
 
@@ -353,6 +370,7 @@ def autonomous_mode(cmd: str, config: Config):
 def watch_command(cmd: str, config: Config):
     """Watch command output and suggest responses (no auto-typing)."""
     print(f"{Colors.BLUE}Watching:{Colors.NC} {cmd}")
+    print(f"   Startup delay: {config.startup_delay}s")
     print()
 
     timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -362,6 +380,8 @@ def watch_command(cmd: str, config: Config):
         f.write("=" * 40 + '\n')
 
     buffer_lines = []
+    start_time = time.time()
+    listening_started = False
 
     try:
         # Use subprocess with PTY-like behavior
@@ -386,8 +406,14 @@ def watch_command(cmd: str, config: Config):
             if len(buffer_lines) > 200:
                 buffer_lines = buffer_lines[-100:]
 
-            # Detect questions
-            if is_question(clean_line):
+            # Wait for startup delay before listening for questions
+            elapsed = time.time() - start_time
+            if not listening_started and elapsed >= config.startup_delay:
+                listening_started = True
+                print(f"\n{Colors.GREEN}Now listening for questions...{Colors.NC}", file=sys.stderr)
+
+            # Detect questions (only after startup delay)
+            if listening_started and is_question(clean_line):
                 print(f"\n{Colors.CYAN}Question detected:{Colors.NC} {clean_line}", file=sys.stderr)
 
                 if config.openai_api_key:
@@ -481,6 +507,14 @@ def configure(config: Config):
         except ValueError:
             print(f"{Colors.YELLOW}Invalid number, keeping current value{Colors.NC}")
 
+    # Startup delay
+    new_startup = input(f"Startup delay seconds [{config.startup_delay}]: ").strip()
+    if new_startup:
+        try:
+            config.startup_delay = int(new_startup)
+        except ValueError:
+            print(f"{Colors.YELLOW}Invalid number, keeping current value{Colors.NC}")
+
     config.save_config()
     print()
     print(f"{Colors.GREEN}Configuration saved{Colors.NC}")
@@ -560,6 +594,7 @@ def show_status(config: Config):
     print(f"   OpenAI Key:  {key_display}")
     print(f"   Model:       {config.openai_model}")
     print(f"   Delay:       {config.response_delay}s")
+    print(f"   Startup:     {config.startup_delay}s")
 
     # Check dependencies
     if pexpect is not None:
