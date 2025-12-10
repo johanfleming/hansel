@@ -307,6 +307,12 @@ def is_question(line: str) -> bool:
         r'initial version',   # Interactive menu question
         r'core features',     # Interactive menu question
         r'want in the',       # Interactive menu question pattern
+        r'want to use',       # Interactive menu question
+        r'framework.*setup',  # Framework selection menu
+        r'do you want to use for', # Selection menu pattern
+        r'which.*would you',  # Which would you like/prefer
+        r'select.*from',      # Select from options
+        r'choose.*from',      # Choose from options
     ]
 
     for pattern in skip_patterns:
@@ -327,9 +333,18 @@ def is_question(line: str) -> bool:
 # =============================================================================
 
 def clean_ansi(text: str) -> str:
-    """Remove ANSI escape codes from text."""
-    ansi_pattern = re.compile(r'\x1b\[[0-9;]*m')
-    return ansi_pattern.sub('', text).replace('\r', '')
+    """Remove ANSI escape codes and terminal control sequences from text."""
+    # Remove all ANSI escape sequences
+    # CSI sequences: ESC [ ... (parameters) ... (final byte)
+    text = re.sub(r'\x1b\[[0-9;?]*[A-Za-z]', '', text)
+    # OSC sequences: ESC ] ... BEL or ST
+    text = re.sub(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?', '', text)
+    # Other escape sequences
+    text = re.sub(r'\x1b[PX^_][^\x1b]*\x1b\\', '', text)
+    text = re.sub(r'\x1b.', '', text)
+    # Remove carriage returns and other control chars (except newline)
+    text = re.sub(r'[\r\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+    return text
 
 # =============================================================================
 # Autonomous Mode
@@ -434,20 +449,66 @@ def autonomous_mode(cmd: str, config: Config):
                     log_to_file(f"SKIP (own response): {clean_line[:50]}")
                     return  # Skip this entire line
 
-            # Check response cooldown (don't detect anything as question right after we sent response)
-            if time.time() < response_cooldown_until:
+            # Check if we're in an interactive menu context
+            recent_context = '\n'.join(buffer_lines[-15:]).lower()
+            in_menu = ('enter to select' in recent_context or
+                      'tab/arrow' in recent_context or
+                      'arrow keys' in recent_context or
+                      'esc to cancel' in recent_context)
+
+            # For menus, trigger when we see the navigation hint line or certain menu patterns
+            clean_lower = clean_line.lower()
+
+            # Check for menu option lines (❯ 1. Yes, etc.)
+            has_menu_options = ('1. yes' in recent_context or
+                               '❯ 1.' in recent_context or
+                               '> 1.' in recent_context or
+                               '1.' in recent_context)
+
+            # Check for confirmation question in context
+            has_confirm_question = ('do you want to proceed' in recent_context or
+                                   'do you want to make' in recent_context or
+                                   'do you want to' in recent_context)
+
+            # Menu trigger conditions - trigger on last menu item or esc hint
+            menu_trigger = False
+            if in_menu:
+                menu_trigger = ('enter to select' in clean_lower or
+                               'esc to cancel' in clean_lower)
+            # Trigger when we see "Esc to cancel" or last menu option with confirmation context
+            if has_menu_options and has_confirm_question:
+                if ('esc to' in clean_lower or
+                    'type here to tell' in clean_lower or
+                    '3.' in clean_lower or
+                    '4.' in clean_lower):
+                    menu_trigger = True
+
+            # Check response cooldown - BUT allow menus to bypass cooldown
+            if time.time() < response_cooldown_until and not menu_trigger:
                 log_to_file(f"SKIP (response cooldown): {clean_line[:50]}")
                 continue
 
-            # Check cooldown between questions
+            # Check cooldown between questions (shorter for menus)
             time_since_last = time.time() - last_question_time
-            if time_since_last < cooldown_seconds:
+            menu_cooldown = 3  # Only 3 seconds for menus
+            if time_since_last < (menu_cooldown if menu_trigger else cooldown_seconds):
                 continue
 
             # Check for questions (only after startup delay)
-            if listening_started and is_question(clean_line):
+            # If we're in menu context, ONLY respond to menu_trigger, not is_question
+            should_respond = False
+            if listening_started:
+                if menu_trigger:
+                    should_respond = True
+                    log_to_file(f"MENU DETECTED: {clean_line}")
+                elif not (has_menu_options or has_confirm_question or in_menu):
+                    # Only check is_question if we're NOT in a menu context
+                    if is_question(clean_line):
+                        should_respond = True
+                        log_to_file(f"QUESTION: {clean_line}")
+
+            if should_respond:
                 last_question_time = time.time()
-                log_to_file(f"QUESTION: {clean_line}")
                 # Run in background thread to not block
                 threading.Thread(
                     target=respond_to_question,
@@ -455,38 +516,139 @@ def autonomous_mode(cmd: str, config: Config):
                     daemon=True
                 ).start()
 
-    def is_confirmation_prompt(question: str, context: list) -> bool:
-        """Check if this is a simple yes/no confirmation with menu options."""
-        q_lower = question.lower()
-        # Check if it's a proceed/confirm type question
-        confirm_patterns = ['do you want to proceed', 'want to continue', 'should i proceed',
-                           'do you want me to', 'shall i continue', 'ready to proceed']
-        if any(p in q_lower for p in confirm_patterns):
-            # Check if recent context has numbered options (1. Yes, 2. No, etc.)
-            recent = '\n'.join(context[-10:]).lower()
-            if '1.' in recent and ('yes' in recent or 'no' in recent):
-                return True
-        return False
+    def is_interactive_menu(context: list) -> bool:
+        """Check if we're in an interactive menu context."""
+        recent = '\n'.join(context[-15:]).lower()
+        return ('enter to select' in recent or
+                'tab/arrow' in recent or
+                'arrow keys' in recent or
+                'esc to cancel' in recent)
+
+    def clean_context_for_ai(lines: list) -> str:
+        """Clean context lines for sending to AI."""
+        seen = set()
+        cleaned = []
+
+        for line in lines:
+            # Extra cleaning for AI context
+            line = clean_ansi(line)
+            stripped = line.strip()
+
+            # Remove lines that are just control sequences or empty
+            if not stripped:
+                continue
+
+            # Skip UI noise patterns
+            skip_patterns = [
+                '─', '━', '═',  # Horizontal lines
+                '>', '·', '⎿', '⏺', '✽', '✻', '✶', '✳', '✢',  # Status symbols
+                'ctrl-g to edit',
+                'esc to interrupt',
+                '? for shortcuts',
+            ]
+            if any(p in stripped for p in skip_patterns) and len(stripped) < 80:
+                continue
+
+            # Skip lines that are mostly dashes/boxes
+            if len(stripped) > 10 and stripped.count('─') > len(stripped) * 0.5:
+                continue
+
+            # Normalize for deduplication (remove spinner chars at start)
+            normalized = stripped.lstrip('·✽✻✶✳✢⏺☐☒☑✓✔ ')
+
+            # Skip if we've seen this content before
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+
+            cleaned.append(stripped)
+
+        return '\n'.join(cleaned)
+
+    def get_menu_prompt(context_lines: list) -> str:
+        """Build a prompt for AI to choose from menu options."""
+        # Get recent lines that contain the menu
+        recent = context_lines[-20:]
+        menu_text = clean_context_for_ai(recent)
+
+        return f"""You are looking at an interactive menu in a terminal.
+Based on the context, choose the best option by responding with ONLY the number (1, 2, 3, etc.) or press Enter for the default.
+
+MENU:
+{menu_text}
+
+RULES:
+1. Respond with ONLY a single number (1, 2, 3, etc.) or "enter" for default
+2. Choose the most sensible/recommended option
+3. If there's a "(Recommended)" option, prefer that
+4. For yes/no confirmations, choose "Yes" (usually option 1)
+5. Do NOT explain your choice, just respond with the number
+
+Your choice (number only):"""
 
     def respond_to_question(question: str, context_lines: list, cfg: Config, fd: int):
         """Get AI response and send it."""
         nonlocal last_response_lines, response_cooldown_until
 
-        # Check if this is a simple confirmation prompt with menu
-        if is_confirmation_prompt(question, context_lines):
-            print(f"\n{Colors.CYAN}Confirmation prompt detected:{Colors.NC} {question}", file=sys.stderr)
-            print(f"{Colors.GREEN}Auto-confirming with Enter{Colors.NC}", file=sys.stderr)
-            log_to_file(f"CONFIRM: {question}")
+        # Check if this is an interactive menu
+        if is_interactive_menu(context_lines):
+            print(f"\n{Colors.CYAN}Interactive menu detected{Colors.NC}", file=sys.stderr)
+            print(f"{Colors.YELLOW}   Consulting AI advisor for selection...{Colors.NC}", file=sys.stderr)
+
+            # Ask AI to choose from menu
+            menu_prompt = get_menu_prompt(context_lines)
+
+            # Call ChatGPT with menu-specific prompt
+            if requests is None or not cfg.openai_api_key:
+                choice = "1"  # Default to first option
+            else:
+                try:
+                    payload = {
+                        "model": cfg.openai_model,
+                        "messages": [
+                            {"role": "user", "content": menu_prompt}
+                        ],
+                        "temperature": 0.3,
+                        "max_tokens": 10
+                    }
+                    resp = requests.post(
+                        "https://api.openai.com/v1/chat/completions",
+                        headers={
+                            "Content-Type": "application/json",
+                            "Authorization": f"Bearer {cfg.openai_api_key}"
+                        },
+                        json=payload,
+                        timeout=15
+                    )
+                    resp.raise_for_status()
+                    choice = resp.json().get("choices", [{}])[0].get("message", {}).get("content", "1").strip()
+                except Exception:
+                    choice = "1"
+
+            # Clean up choice - extract just the number
+            choice_clean = ''.join(c for c in choice if c.isdigit())
+            if not choice_clean:
+                choice_clean = ""  # Will just press Enter
+
+            print(f"{Colors.GREEN}AI chose:{Colors.NC} {choice_clean if choice_clean else 'Enter (default)'}", file=sys.stderr)
+            log_to_file(f"MENU CHOICE: {choice_clean if choice_clean else 'Enter'}")
+
             time.sleep(cfg.response_delay)
-            response_cooldown_until = time.time() + 10
+            response_cooldown_until = time.time() + 15
+
             if fd:
-                os.write(fd, b'\r')  # Just press Enter to confirm default (Yes)
+                if choice_clean:
+                    # Type the number
+                    os.write(fd, choice_clean.encode())
+                    time.sleep(0.1)
+                # Press Enter
+                os.write(fd, b'\r')
             return
 
         print(f"\n{Colors.CYAN}Question detected:{Colors.NC} {question}", file=sys.stderr)
         print(f"{Colors.YELLOW}   Consulting AI advisor...{Colors.NC}", file=sys.stderr)
 
-        context = '\n'.join(context_lines[-100:])
+        context = clean_context_for_ai(context_lines[-100:])
         response = call_chatgpt(question, context, cfg)
 
         # Store response lines to avoid detecting them as questions

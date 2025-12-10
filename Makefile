@@ -1,4 +1,4 @@
-.PHONY: run auto watch install test help status config
+.PHONY: run auto watch install test help status config build publish publish-test clean
 
 # Default target
 help:
@@ -12,6 +12,12 @@ help:
 	@echo "  make config       Configure hansel"
 	@echo "  make install      Install hansel to ~/.local/bin"
 	@echo "  make test         Run tests"
+	@echo ""
+	@echo "PyPI Publishing:"
+	@echo "  make build        Build package for PyPI"
+	@echo "  make publish-test Upload to TestPyPI"
+	@echo "  make publish      Upload to PyPI (production)"
+	@echo "  make clean        Clean build artifacts"
 
 run:
 	python3 hansel.py help
@@ -33,3 +39,19 @@ install:
 
 test:
 	python3 test_hansel.py
+
+# PyPI publishing
+clean:
+	rm -rf dist/ build/ *.egg-info/
+
+build: clean
+	python3 -m pip install --upgrade build
+	python3 -m build
+
+publish-test: build
+	python3 -m pip install --upgrade twine
+	python3 -m twine upload --repository testpypi dist/*
+
+publish: build
+	python3 -m pip install --upgrade twine
+	python3 -m twine upload dist/*
