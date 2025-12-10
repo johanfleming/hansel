@@ -362,6 +362,19 @@ def is_question(line: str) -> bool:
         r'which.*would you',  # Which would you like/prefer
         r'select.*from',      # Select from options
         r'choose.*from',      # Choose from options
+        # Code patterns - skip code snippets that contain ?
+        r'\w+\?\s*$',         # TypeScript/Prisma optional types: String?, Int?
+        r'===\s*[\'"]?\w+[\'"]?\s*\?',  # Ternary operators: === 'text' ?
+        r'\?\s*:',            # Ternary operator: condition ? true : false
+        r'\?\.',              # Optional chaining: obj?.prop
+        r'\?\[',              # Optional indexing: arr?[0]
+        r'^\s*\w+\s+\w+\??$', # Schema fields: fieldName Type?
+        r'const\s+\w+',       # Variable declarations
+        r'let\s+\w+',         # Variable declarations
+        r'var\s+\w+',         # Variable declarations
+        r'=>',                # Arrow functions
+        r'\{.*\}',            # Objects/blocks with braces
+        r'\[.*\]',            # Arrays with brackets
     ]
 
     for pattern in skip_patterns:
@@ -381,7 +394,7 @@ def is_question(line: str) -> bool:
 # ASCII Art Banner
 # =============================================================================
 
-def show_banner(mode: str = "auto", version: str = "0.1.4"):
+def show_banner(mode: str = "auto", version: str = "0.1.7"):
     """Show Hansel ASCII art banner."""
     # Colors for the house
     BROWN = '\033[38;5;130m'
@@ -449,7 +462,8 @@ def autonomous_mode(cmd: str, config: Config):
     print(f"   Command: {Colors.BLUE}{cmd}{Colors.NC}", file=sys.stderr)
     print(f"   Model: {Colors.CYAN}{config.openai_model}{Colors.NC}", file=sys.stderr)
     print(f"   Delay: {config.response_delay}s | Startup: {config.startup_delay}s", file=sys.stderr)
-    print(f"\n{Colors.YELLOW}Press Ctrl+C to exit{Colors.NC}\n", file=sys.stderr)
+    print(f"\n{Colors.YELLOW}Press Ctrl+C to exit{Colors.NC}", file=sys.stderr)
+    print(f"{Colors.MAGENTA}[Status: Starting...]{Colors.NC}\n", file=sys.stderr)
 
     # Initialize buffer
     timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -463,9 +477,28 @@ def autonomous_mode(cmd: str, config: Config):
     master_fd = None
     last_response_lines = set()  # Track our last response lines to avoid loops
     last_question_time = 0  # Cooldown between questions
-    cooldown_seconds = 15  # Wait at least 15 seconds between questions
+    cooldown_seconds = 10  # Wait at least 10 seconds between questions
     response_cooldown_until = 0  # Don't detect questions until this time
     user_typing_until = [0]  # Cooldown after user types (list for mutability)
+    current_status = ["Starting..."]  # Current status message (list for mutability)
+    last_output_time = [time.time()]  # Track last output for inactivity detection
+    inactivity_warned = [False]  # Track if we already warned about inactivity
+    inactivity_threshold = 30  # Seconds of no output before warning
+
+    def update_status(new_status: str):
+        """Update and display the current status."""
+        current_status[0] = new_status
+        # Print status to stderr (above the terminal output)
+        print(f"\r{Colors.MAGENTA}[Status: {new_status}]{Colors.NC}     ", file=sys.stderr, end='', flush=True)
+
+    def show_cooldown_status():
+        """Show cooldown remaining time if in cooldown."""
+        if time.time() < response_cooldown_until:
+            remaining = int(response_cooldown_until - time.time())
+            if remaining > 0:
+                update_status(f"Cooldown: {remaining}s remaining")
+                return True
+        return False
 
     # Create session log file
     session_id = time.strftime('%Y%m%d_%H%M%S')
@@ -506,6 +539,10 @@ def autonomous_mode(cmd: str, config: Config):
             if not clean_line.strip():
                 continue
 
+            # Update last output time and reset inactivity warning
+            last_output_time[0] = time.time()
+            inactivity_warned[0] = False
+
             # Log to buffer and file
             with open(BUFFER_FILE, 'a') as f:
                 f.write(clean_line + '\n')
@@ -521,6 +558,7 @@ def autonomous_mode(cmd: str, config: Config):
             if not listening_started and elapsed >= config.startup_delay:
                 listening_started = True
                 print(f"\n{Colors.GREEN}Now listening for questions...{Colors.NC}", file=sys.stderr)
+                update_status("Listening for questions")
                 log_to_file("Listening started")
 
             # Skip if this looks like our own response
@@ -569,6 +607,9 @@ def autonomous_mode(cmd: str, config: Config):
 
             # Check response cooldown - BUT allow menus to bypass cooldown
             if time.time() < response_cooldown_until and not menu_trigger:
+                remaining = int(response_cooldown_until - time.time())
+                if remaining > 0:
+                    update_status(f"Cooldown: {remaining}s")
                 log_to_file(f"SKIP (response cooldown): {clean_line[:50]}")
                 continue
 
@@ -678,6 +719,7 @@ Your choice (number only):"""
         if is_interactive_menu(context_lines):
             print(f"\n{Colors.CYAN}Interactive menu detected{Colors.NC}", file=sys.stderr)
             print(f"{Colors.YELLOW}   Consulting AI advisor for selection...{Colors.NC}", file=sys.stderr)
+            update_status("Selecting menu option...")
 
             # Ask AI to choose from menu
             menu_prompt = get_menu_prompt(context_lines)
@@ -728,10 +770,12 @@ Your choice (number only):"""
                     time.sleep(0.1)
                 # Press Enter
                 os.write(fd, b'\r')
+            update_status("Listening for questions")
             return
 
         print(f"\n{Colors.CYAN}Question detected:{Colors.NC} {question}", file=sys.stderr)
         print(f"{Colors.YELLOW}   Consulting AI advisor...{Colors.NC}", file=sys.stderr)
+        update_status("Asking AI advisor...")
 
         context = clean_context_for_ai(context_lines[-100:])
         response = call_chatgpt(question, context, cfg)
@@ -753,11 +797,12 @@ Your choice (number only):"""
         # Wait before responding
         time.sleep(cfg.response_delay)
 
-        # Set cooldown - don't detect questions for 20 seconds after sending response
-        response_cooldown_until = time.time() + 20
+        # Set cooldown - don't detect questions for 10 seconds after sending response
+        response_cooldown_until = time.time() + 10
 
         # Send response to the PTY
         if fd:
+            update_status("Typing response...")
             # Type response character by character with small delay
             for char in response:
                 os.write(fd, char.encode())
@@ -767,6 +812,7 @@ Your choice (number only):"""
             os.write(fd, b'\r')  # Carriage return
             time.sleep(0.05)
             os.write(fd, b'\n')  # Newline
+            update_status("Listening for questions")
 
     try:
         # Create pseudo-terminal
@@ -813,6 +859,16 @@ Your choice (number only):"""
                     if result[0] != 0:
                         break
 
+                    # Check for inactivity - warn user to check screen
+                    if listening_started and not inactivity_warned[0]:
+                        time_since_output = time.time() - last_output_time[0]
+                        if time_since_output >= inactivity_threshold:
+                            print(f"\n{Colors.YELLOW}[!] No output for {int(time_since_output)}s - check screen for questions/prompts{Colors.NC}", file=sys.stderr)
+                            update_status("Check screen - possible question waiting")
+                            play_notification_sound()
+                            inactivity_warned[0] = True
+                            log_to_file(f"INACTIVITY WARNING: {int(time_since_output)}s")
+
             except EOFError:
                 pass
 
@@ -833,6 +889,17 @@ Your choice (number only):"""
 
 def watch_command(cmd: str, config: Config):
     """Watch command output and detect questions (beep only, no AI)."""
+    # Windows doesn't support watching interactive CLI programs properly
+    if IS_WINDOWS:
+        print(f"{Colors.RED}Error: Watch mode is not fully supported on Windows{Colors.NC}")
+        print("Windows cannot capture output from interactive CLI programs like Claude.")
+        print(f"\n{Colors.YELLOW}Workaround:{Colors.NC} Run Claude directly and use Hansel for other tasks:")
+        print(f"  - {Colors.CYAN}hansel config{Colors.NC}  - Configure settings")
+        print(f"  - {Colors.CYAN}hansel ask \"your question\"{Colors.NC}  - Ask AI advisor directly")
+        print(f"  - {Colors.CYAN}hansel status{Colors.NC}  - Show status")
+        print(f"\n{Colors.YELLOW}For full autonomous mode, use macOS or Linux.{Colors.NC}")
+        return 1
+
     show_banner("watch")
     print(f"   Command: {Colors.BLUE}{cmd}{Colors.NC}", file=sys.stderr)
     print(f"   Startup delay: {config.startup_delay}s", file=sys.stderr)
@@ -849,28 +916,14 @@ def watch_command(cmd: str, config: Config):
     listening_started = False
 
     try:
-        # Use subprocess - on Windows we need to handle stdin differently
-        if IS_WINDOWS:
-            # On Windows, run command directly without capturing stdin
-            # This allows interactive programs like Claude to work
-            process = subprocess.Popen(
-                cmd,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                stdin=None,  # Inherit stdin from parent
-                text=True,
-                bufsize=1
-            )
-        else:
-            process = subprocess.Popen(
-                cmd,
-                shell=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1
-            )
+        process = subprocess.Popen(
+            cmd,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
 
         for line in iter(process.stdout.readline, ''):
             clean_line = clean_ansi(line.rstrip())
