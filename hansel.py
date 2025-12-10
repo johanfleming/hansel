@@ -269,7 +269,7 @@ def is_question(line: str) -> bool:
     if len(line) < 15:
         return False
 
-    # Skip lines that are clearly not questions (UI hints, shortcuts, code)
+    # Skip lines that are clearly not questions (UI hints, shortcuts, code, menus)
     skip_patterns = [
         r'^[\s]*[#/\*]',      # Comments
         r'^[\s]*import ',     # Import statements
@@ -290,6 +290,23 @@ def is_question(line: str) -> bool:
         r'Reading',           # Claude status messages
         r'Writing',           # Claude status messages
         r'Searching',         # Claude status messages
+        # Interactive menu/checkbox patterns
+        r'^\d+\.',            # Numbered list items (1. 2. 3.)
+        r'^\[\s*[\]xX✓✔]\s*\]',  # Checkbox items [ ] [x] [✓]
+        r'Enter to select',   # Menu navigation hints
+        r'Tab.*to navigate',  # Tab navigation hints
+        r'Arrow keys',        # Arrow key hints
+        r'to cancel',         # Cancel hints
+        r'^←|^→|^↑|^↓',       # Arrow symbols
+        r'^\s*Next\s*$',      # "Next" button
+        r'Submit',            # Submit button
+        r'Package',           # Menu items
+        r'Features',          # Menu items
+        r'Rendering',         # Menu items
+        r'Styling',           # Menu items
+        r'initial version',   # Interactive menu question
+        r'core features',     # Interactive menu question
+        r'want in the',       # Interactive menu question pattern
     ]
 
     for pattern in skip_patterns:
@@ -349,6 +366,7 @@ def autonomous_mode(cmd: str, config: Config):
     last_question_time = 0  # Cooldown between questions
     cooldown_seconds = 15  # Wait at least 15 seconds between questions
     response_cooldown_until = 0  # Don't detect questions until this time
+    user_typing_until = [0]  # Cooldown after user types (list for mutability)
 
     # Create session log file
     session_id = time.strftime('%Y%m%d_%H%M%S')
@@ -370,6 +388,10 @@ def autonomous_mode(cmd: str, config: Config):
         nonlocal line_buffer, listening_started, buffer_lines, last_question_time, response_cooldown_until
 
         line_buffer += data
+
+        # Skip if user recently typed (to avoid processing echo)
+        if time.time() < user_typing_until[0]:
+            return
 
         # Process complete lines
         while '\n' in line_buffer or '\r' in line_buffer:
@@ -497,6 +519,8 @@ def autonomous_mode(cmd: str, config: Config):
                             data = os.read(sys.stdin.fileno(), 1024)
                             if data:
                                 os.write(master_fd, data)
+                                # Track that user is typing - don't process output for 0.5s
+                                user_typing_until[0] = time.time() + 0.5
                         elif fd == master_fd:
                             # Output from PTY - display and analyze
                             try:
