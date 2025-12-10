@@ -104,12 +104,20 @@ def main():
         else:
             shell_config = Path.home() / ".bashrc"
 
-        # Check if already in config
+        # Check if already in config (must be uncommented export line)
         path_line = 'export PATH="${HOME}/.local/bin:${PATH}"'
 
         if shell_config.exists():
             content = shell_config.read_text()
-            if '.local/bin' not in content:
+            # Check for active (uncommented) .local/bin in PATH
+            has_active_path = False
+            for line in content.splitlines():
+                line_stripped = line.strip()
+                if '.local/bin' in line_stripped and not line_stripped.startswith('#'):
+                    has_active_path = True
+                    break
+
+            if not has_active_path:
                 print(f"   Adding to {shell_config}...")
                 with open(shell_config, 'a') as f:
                     f.write('\n# Hansel - added by installer\n')
