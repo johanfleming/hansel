@@ -19,14 +19,22 @@ import signal
 import subprocess
 import threading
 import argparse
-import pty
 import select
-import tty
-import termios
 from pathlib import Path
 from typing import Optional
 import shutil
 import platform
+
+# Unix-only modules (not available on Windows)
+IS_WINDOWS = platform.system() == "Windows"
+if not IS_WINDOWS:
+    import pty
+    import tty
+    import termios
+else:
+    pty = None
+    tty = None
+    termios = None
 
 try:
     import requests
@@ -76,6 +84,16 @@ LANG_DIR = HANSEL_DIR / "lang"
 
 # Script directory for bundled lang files
 SCRIPT_DIR = Path(__file__).parent.resolve() if '__file__' in dir() else Path.cwd()
+
+# Enable ANSI colors on Windows
+if IS_WINDOWS:
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        # Enable ANSI escape sequences on Windows 10+
+        kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+    except Exception:
+        pass  # Ignore if it fails
 
 # Colors
 class Colors:
@@ -360,6 +378,39 @@ def is_question(line: str) -> bool:
     return False
 
 # =============================================================================
+# ASCII Art Banner
+# =============================================================================
+
+def show_banner(mode: str = "auto", version: str = "0.1.4"):
+    """Show Hansel ASCII art banner."""
+    # Colors for the house
+    BROWN = '\033[38;5;130m'
+    YELLOW = '\033[38;5;220m'
+    GREEN = '\033[38;5;34m'
+    RED = '\033[38;5;196m'
+    CYAN = '\033[38;5;51m'
+    WHITE = '\033[38;5;255m'
+    DIM = '\033[2m'
+    NC = '\033[0m'
+
+    house = f"""
+{DIM}───────────────────────────────────{NC}
+{BROWN}            /\\{NC}
+{BROWN}           /  \\{NC}
+{BROWN}          /    \\{NC}
+{RED}         /______\\{NC}
+{YELLOW}        |  {WHITE}_  _{YELLOW}  |{NC}
+{YELLOW}        | {CYAN}|o||o|{YELLOW} |{NC}
+{YELLOW}        |  {WHITE}‾‾‾{YELLOW}  |{NC}
+{YELLOW}        |{GREEN}HANSEL{YELLOW} |{NC}
+{YELLOW}        |__{WHITE}[]{YELLOW}__|{NC}
+{DIM}───────────────────────────────────{NC}
+{WHITE}  Hansel v{version} - {mode} mode{NC}
+{DIM}───────────────────────────────────{NC}
+"""
+    print(house, file=sys.stderr)
+
+# =============================================================================
 # ANSI Code Cleaning
 # =============================================================================
 
@@ -383,20 +434,22 @@ def clean_ansi(text: str) -> str:
 
 def autonomous_mode(cmd: str, config: Config):
     """Run in full autonomous mode with auto-typing responses."""
+    if IS_WINDOWS:
+        print(f"{Colors.RED}Error: Autonomous mode is not supported on Windows{Colors.NC}")
+        print("Windows does not support PTY (pseudo-terminal) which is required for auto-typing.")
+        print(f"\nYou can use watch mode instead: {Colors.CYAN}hansel watch {cmd}{Colors.NC}")
+        return 1
+
     if not config.openai_api_key:
         print(f"{Colors.RED}Error: OPENAI_API_KEY not set{Colors.NC}")
         print("Run: hansel config")
         return 1
 
-    print(f"{Colors.GREEN}Hansel Autonomous Mode{Colors.NC}")
-    print(f"   Command: {Colors.BLUE}{cmd}{Colors.NC}")
-    print(f"   Model: {Colors.CYAN}{config.openai_model}{Colors.NC}")
-    print(f"   Response delay: {config.response_delay}s")
-    print(f"   Startup delay: {config.startup_delay}s")
-    print()
-    print(f"{Colors.YELLOW}Press Ctrl+C to exit{Colors.NC}")
-    print("=" * 40)
-    print()
+    show_banner("autonomous")
+    print(f"   Command: {Colors.BLUE}{cmd}{Colors.NC}", file=sys.stderr)
+    print(f"   Model: {Colors.CYAN}{config.openai_model}{Colors.NC}", file=sys.stderr)
+    print(f"   Delay: {config.response_delay}s | Startup: {config.startup_delay}s", file=sys.stderr)
+    print(f"\n{Colors.YELLOW}Press Ctrl+C to exit{Colors.NC}\n", file=sys.stderr)
 
     # Initialize buffer
     timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
@@ -779,10 +832,11 @@ Your choice (number only):"""
 # =============================================================================
 
 def watch_command(cmd: str, config: Config):
-    """Watch command output and suggest responses (no auto-typing)."""
-    print(f"{Colors.BLUE}Watching:{Colors.NC} {cmd}")
-    print(f"   Startup delay: {config.startup_delay}s")
-    print()
+    """Watch command output and detect questions (beep only, no AI)."""
+    show_banner("watch")
+    print(f"   Command: {Colors.BLUE}{cmd}{Colors.NC}", file=sys.stderr)
+    print(f"   Startup delay: {config.startup_delay}s", file=sys.stderr)
+    print(f"\n{Colors.YELLOW}Press Ctrl+C to exit{Colors.NC}\n", file=sys.stderr)
 
     timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
     with open(BUFFER_FILE, 'a') as f:
@@ -795,15 +849,28 @@ def watch_command(cmd: str, config: Config):
     listening_started = False
 
     try:
-        # Use subprocess with PTY-like behavior
-        process = subprocess.Popen(
-            cmd,
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1
-        )
+        # Use subprocess - on Windows we need to handle stdin differently
+        if IS_WINDOWS:
+            # On Windows, run command directly without capturing stdin
+            # This allows interactive programs like Claude to work
+            process = subprocess.Popen(
+                cmd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=None,  # Inherit stdin from parent
+                text=True,
+                bufsize=1
+            )
+        else:
+            process = subprocess.Popen(
+                cmd,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
 
         for line in iter(process.stdout.readline, ''):
             clean_line = clean_ansi(line.rstrip())
@@ -826,12 +893,7 @@ def watch_command(cmd: str, config: Config):
             # Detect questions (only after startup delay)
             if listening_started and is_question(clean_line):
                 print(f"\n{Colors.CYAN}Question detected:{Colors.NC} {clean_line}", file=sys.stderr)
-
-                if config.openai_api_key:
-                    context = '\n'.join(buffer_lines[-50:])
-                    response = call_chatgpt(clean_line, context, config)
-                    print(f"{Colors.GREEN}Suggested:{Colors.NC} {response}", file=sys.stderr)
-                    print(f"{Colors.YELLOW}(Copy and paste, or type your own){Colors.NC}", file=sys.stderr)
+                play_notification_sound()
 
         process.wait()
 
@@ -1035,7 +1097,10 @@ COMMANDS:
     auto <cmd>      FULL AUTONOMOUS MODE - auto-detects and responds
                     Example: hansel auto claude
 
-    watch <cmd>     Watch mode - detects questions, suggests responses
+    claude          Quick mode - just detect questions and beep (no AI)
+                    Example: hansel claude
+
+    watch <cmd>     Watch mode - detects questions and beeps
                     Example: hansel watch "npm run dev"
 
     ask <question>  Ask ChatGPT directly (uses buffer as context)
@@ -1108,6 +1173,10 @@ def main():
             print("Usage: hansel watch <command>")
             return 1
         return watch_command(' '.join(args), config)
+
+    elif command == 'claude':
+        # Shortcut: hansel claude = hansel watch claude (just detect questions and beep)
+        return watch_command('claude', config)
 
     elif command == 'ask':
         if not args:
