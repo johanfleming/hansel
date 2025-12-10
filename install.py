@@ -121,9 +121,10 @@ def main():
             print(f"\nAdd this line to your shell config:")
             print(f"    {path_line}")
 
-        # Update current session
-        os.environ["PATH"] = f"{install_dir_str}:{os.environ.get('PATH', '')}"
-        print("PATH updated for current session")
+        print()
+        print("To use hansel, either:")
+        print("    1. Open a new terminal, or")
+        print("    2. Run: source ~/.zshrc")
     else:
         print("PATH already configured")
 
@@ -137,6 +138,9 @@ def main():
     print()
     print("Quick start with auto-respond:")
     print("    hansel auto claude")
+    print()
+    print("Or run directly:")
+    print(f"    {dest_file} help")
 
 if __name__ == "__main__":
     main()
