@@ -394,58 +394,22 @@ watch_command() {
 # -----------------------------------------------------------------------------
 interactive_auto() {
     local cmd="$*"
-    
+
     if [[ -z "$cmd" ]]; then
         echo "Usage: hansel interactive <command>"
         return 1
     fi
-    
+
     ensure_dirs
-    
+
     if [[ -z "${OPENAI_API_KEY}" ]]; then
         echo -e "${RED}Error: OPENAI_API_KEY not set${NC}"
         return 1
     fi
-    
-    echo -e "🍞 ${GREEN}Hansel Interactive Auto Mode${NC}"
-    echo -e "   When Claude asks a question:"
-    echo -e "   - ChatGPT suggests an answer"
-    echo -e "   - Press ${CYAN}Enter${NC} to send, or type your own"
-    echo ""
-    
-    # Use coprocess for bidirectional communication
-    coproc CLAUDE { script -q -c "$cmd" /dev/null 2>&1; }
-    
-    local claude_out="${CLAUDE[0]}"
-    local claude_in="${CLAUDE[1]}"
-    
-    while IFS= read -r line <&${claude_out}; do
-        clean_line=$(echo "$line" | sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r')
-        
-        echo "$line"
-        echo "$clean_line" >> "${BUFFER_FILE}"
-        
-        if is_question "$clean_line"; then
-            echo ""
-            echo -e "${CYAN}🤖 Consulting ChatGPT...${NC}"
-            
-            local context=$(tail -n 50 "${BUFFER_FILE}")
-            local response=$(call_chatgpt "$clean_line" "$context")
-            
-            echo -e "${GREEN}Suggested response:${NC}"
-            echo "$response"
-            echo ""
-            echo -ne "${YELLOW}Press Enter to send, or type your own: ${NC}"
-            
-            read -r user_input
-            
-            if [[ -z "$user_input" ]]; then
-                echo "$response" >&${claude_in}
-            else
-                echo "$user_input" >&${claude_in}
-            fi
-        fi
-    done
+
+    echo -e "${YELLOW}Note: Interactive mode requires 'auto' or 'watch' mode.${NC}"
+    echo -e "Use: ${CYAN}hansel auto $cmd${NC} for full autopilot"
+    echo -e "Use: ${CYAN}hansel watch $cmd${NC} for suggestions only"
 }
 
 # -----------------------------------------------------------------------------

@@ -3,11 +3,17 @@
 # =============================================================================
 # 🍞 Hansel Installer
 # =============================================================================
+# Usage:
+#   curl -fsSL https://raw.githubusercontent.com/johanfleming/hansel/main/install.sh | bash
+# =============================================================================
 
 set -e
 
 INSTALL_DIR="${HOME}/.local/bin"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_URL="https://raw.githubusercontent.com/johanfleming/hansel/main"
+
+# Check if running from local clone or remote
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || SCRIPT_DIR=""
 
 echo "🍞 Hansel Installation"
 echo "════════════════════════════════════════"
@@ -31,8 +37,14 @@ echo ""
 # Create directory
 mkdir -p "${INSTALL_DIR}"
 
-# Copy hansel
-cp "${SCRIPT_DIR}/hansel" "${INSTALL_DIR}/hansel"
+# Install hansel (from local or remote)
+if [[ -n "${SCRIPT_DIR}" && -f "${SCRIPT_DIR}/hansel" ]]; then
+    echo "Installing from local source..."
+    cp "${SCRIPT_DIR}/hansel" "${INSTALL_DIR}/hansel"
+else
+    echo "Downloading from GitHub..."
+    curl -fsSL "${REPO_URL}/hansel" -o "${INSTALL_DIR}/hansel"
+fi
 chmod +x "${INSTALL_DIR}/hansel"
 
 echo "✅ Hansel installed: ${INSTALL_DIR}/hansel"
