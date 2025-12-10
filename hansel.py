@@ -26,11 +26,42 @@ import termios
 from pathlib import Path
 from typing import Optional
 import shutil
+import platform
 
 try:
     import requests
 except ImportError:
     requests = None
+
+# =============================================================================
+# Sound Notification
+# =============================================================================
+
+def play_notification_sound():
+    """Play a notification sound when AI advisor responds."""
+    system = platform.system()
+    try:
+        if system == "Darwin":  # macOS
+            # Use system sound
+            subprocess.Popen(
+                ["afplay", "/System/Library/Sounds/Glass.aiff"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+        elif system == "Windows":
+            import winsound
+            winsound.MessageBeep(winsound.MB_OK)
+        elif system == "Linux":
+            # Try paplay (PulseAudio) or aplay (ALSA)
+            for cmd in [["paplay", "/usr/share/sounds/freedesktop/stereo/complete.oga"],
+                       ["aplay", "/usr/share/sounds/alsa/Front_Center.wav"]]:
+                try:
+                    subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    break
+                except FileNotFoundError:
+                    continue
+    except Exception:
+        pass  # Silently fail if sound doesn't work
 
 # =============================================================================
 # Configuration
@@ -632,6 +663,7 @@ Your choice (number only):"""
 
             print(f"{Colors.GREEN}AI chose:{Colors.NC} {choice_clean if choice_clean else 'Enter (default)'}", file=sys.stderr)
             log_to_file(f"MENU CHOICE: {choice_clean if choice_clean else 'Enter'}")
+            play_notification_sound()
 
             time.sleep(cfg.response_delay)
             response_cooldown_until = time.time() + 15
@@ -663,6 +695,7 @@ Your choice (number only):"""
 
         print(f"{Colors.GREEN}Response:{Colors.NC} {response}", file=sys.stderr)
         log_to_file(f"RESPONSE: {response}")
+        play_notification_sound()
 
         # Wait before responding
         time.sleep(cfg.response_delay)
